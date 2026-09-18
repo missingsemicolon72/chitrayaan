@@ -44,6 +44,8 @@ export function describeDatabaseContract(
         expect(created.sourceKey).toBeNull();
         expect(created.sizeBytes).toBeNull();
         expect(created.durationSeconds).toBeNull();
+        expect(created.hlsManifestKey).toBeNull();
+        expect(created.dashManifestKey).toBeNull();
         expect(created.createdAt).toMatch(ISO_UTC);
         expect(created.updatedAt).toBe(created.createdAt);
 
@@ -84,6 +86,8 @@ export function describeDatabaseContract(
           width: 1280,
           height: 720,
           error: null,
+          hlsManifestKey: `videos/${created.id}/master.m3u8`,
+          dashManifestKey: `videos/${created.id}/master.mpd`,
         });
         expect(updated).toMatchObject({
           id: created.id,
@@ -92,6 +96,8 @@ export function describeDatabaseContract(
           durationSeconds: 12.5,
           width: 1280,
           height: 720,
+          hlsManifestKey: `videos/${created.id}/master.m3u8`,
+          dashManifestKey: `videos/${created.id}/master.mpd`,
           createdAt: created.createdAt,
         });
         expect(updated?.updatedAt.localeCompare(created.updatedAt)).toBeGreaterThanOrEqual(0);

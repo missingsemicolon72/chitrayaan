@@ -26,6 +26,9 @@ export interface Video {
   width: number | null;
   height: number | null;
   error: string | null;
+  /** Storage keys of the packaged manifests; set when a transcode completes. */
+  hlsManifestKey: string | null;
+  dashManifestKey: string | null;
   /** ISO 8601 UTC timestamps. */
   createdAt: string;
   updatedAt: string;
@@ -53,6 +56,8 @@ export type VideoPatch = Partial<
     | 'width'
     | 'height'
     | 'error'
+    | 'hlsManifestKey'
+    | 'dashManifestKey'
   >
 >;
 

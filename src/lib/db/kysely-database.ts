@@ -117,6 +117,8 @@ class KyselyVideoRepository implements VideoRepository {
       width: null,
       height: null,
       error: null,
+      hlsManifestKey: null,
+      dashManifestKey: null,
       createdAt: now,
       updatedAt: now,
     };

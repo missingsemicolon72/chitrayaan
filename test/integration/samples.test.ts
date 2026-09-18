@@ -1,15 +1,10 @@
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import {
-  buildRenditionArgs,
-  H264_720P,
-  planRendition,
-  probe,
-  runFfmpeg,
-} from '../../src/lib/transcode/index.js';
+import { buildLadderArgs, parseMpd } from '../../src/lib/packaging/index.js';
+import { H264_LADDER, planLadder, probe, runFfmpeg } from '../../src/lib/transcode/index.js';
 import { FFMPEG_PATH, FFPROBE_PATH, ffmpegAvailable } from '../helpers/ffmpeg.js';
 
 /**
@@ -28,34 +23,38 @@ if (process.env.RUN_SAMPLE_TESTS === '1' && samples.length === 0) {
   console.warn(`[samples] no media files found in ${SAMPLES_DIR}`);
 }
 
-describe.skipIf(samples.length === 0)('real sample clips -> 720p CMAF rendition', () => {
+describe.skipIf(samples.length === 0)('real sample clips -> full ladder, DASH + HLS', () => {
   for (const name of samples) {
     it(
-      `transcodes ${name}`,
+      `packages ${name}`,
       async () => {
         const src = path.join(SAMPLES_DIR, name);
         const outDir = await mkdtemp(path.join(os.tmpdir(), 'chitrayaan-sample-'));
         try {
           const info = await probe(src, { ffprobePath: FFPROBE_PATH });
           expect(info.hasVideo, 'sample has a video stream').toBe(true);
-          const plan = planRendition(H264_720P, info);
+          const plans = planLadder(H264_LADDER, info);
           const started = Date.now();
-          await runFfmpeg(buildRenditionArgs(src, plan, { preset: 'veryfast' }), {
+          await runFfmpeg(buildLadderArgs(src, plans, { preset: 'veryfast' }), {
             ffmpegPath: FFMPEG_PATH,
             cwd: outDir,
             durationSeconds: info.durationSeconds,
           });
-          const output = await probe(path.join(outDir, 'index.m3u8'), {
+          const mpd = parseMpd(await readFile(path.join(outDir, 'master.mpd'), 'utf8'));
+          const video = mpd.representations.filter((r) => r.contentType === 'video');
+          console.log(
+            `[samples] ${name}: ${info.width}x${info.height} @${info.frameRate ?? '?'}fps ` +
+              `${info.durationSeconds.toFixed(1)}s -> ${video.map((r) => `${r.width}x${r.height}`).join(', ')} ` +
+              `in ${((Date.now() - started) / 1000).toFixed(1)}s`,
+          );
+          expect(video).toHaveLength(plans.length);
+          const top = await probe(path.join(outDir, `media_${plans.length - 1}.m3u8`), {
             ffprobePath: FFPROBE_PATH,
           });
-          console.log(
-            `[samples] ${name}: ${info.width}x${info.height} ${info.durationSeconds.toFixed(1)}s -> ` +
-              `${output.width}x${output.height} in ${((Date.now() - started) / 1000).toFixed(1)}s`,
-          );
-          expect(output.videoCodec).toBe('h264');
-          expect(Math.min(output.width ?? 0, output.height ?? 0)).toBeLessThanOrEqual(720);
-          expect(output.durationSeconds).toBeCloseTo(info.durationSeconds, 0);
-          if (info.hasAudio) expect(output.audioCodec).toBe('aac');
+          expect(top.videoCodec).toBe('h264');
+          expect(top.durationSeconds).toBeCloseTo(info.durationSeconds, 0);
+          if (info.hasAudio)
+            expect(mpd.representations.some((r) => r.contentType === 'audio')).toBe(true);
         } finally {
           await rm(outDir, { recursive: true, force: true });
         }

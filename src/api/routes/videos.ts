@@ -49,13 +49,13 @@ export async function videoRoutes(app: FastifyInstance): Promise<void> {
         app.db.jobs.list({ videoId: id, limit: 200 }),
         app.db.renditions.listForVideo(id),
       ]);
+      const urlFor = (key: string | null) =>
+        key === null ? null : `/api/videos/${id}/${key.slice(`videos/${id}/`.length)}`;
       return {
         ...video,
         jobs: jobs.items,
-        renditions: renditions.map((r) => ({
-          ...r,
-          playlistUrl: `/api/videos/${id}/${r.playlistKey.slice(`videos/${id}/`.length)}`,
-        })),
+        manifests: { hls: urlFor(video.hlsManifestKey), dash: urlFor(video.dashManifestKey) },
+        renditions: renditions.map((r) => ({ ...r, playlistUrl: urlFor(r.playlistKey) })),
       };
     },
   );

@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  buildRenditionArgs,
   GOP_SECONDS,
   H264_720P,
   H264_LADDER,
   interpretProbeOutput,
   parseProgressBlock,
+  planLadder,
   planRendition,
   ProbeError,
   SEGMENT_SECONDS,
@@ -74,40 +74,43 @@ describe('planRendition', () => {
   });
 });
 
-describe('buildRenditionArgs', () => {
-  it('encodes H.264/AAC into CMAF fMP4 segments with a fixed GOP', () => {
-    const plan = planRendition(H264_720P, source({}));
-    const args = buildRenditionArgs('/in/source.mp4', plan, { preset: 'veryfast' });
-    const joined = args.join(' ');
+describe('planLadder', () => {
+  const sizes = (info: MediaInfo) =>
+    planLadder(H264_LADDER, info).map((p) => `${p.profile.name}:${p.width}x${p.height}`);
 
-    expect(args.slice(0, 3)).toEqual(['-y', '-i', '/in/source.mp4']);
-    expect(joined).toContain('-map 0:v:0 -map 0:a:0');
-    expect(joined).toContain('-vf scale=1280:720,format=yuv420p');
-    expect(joined).toContain('-c:v libx264 -preset veryfast -profile:v high');
-    expect(joined).toContain('-b:v 2800k -maxrate 2996k -bufsize 5600k');
-    expect(joined).toContain(`-g ${2 * 30} -keyint_min ${2 * 30} -sc_threshold 0`);
-    expect(joined).toContain(`-force_key_frames expr:gte(t,n_forced*${GOP_SECONDS})`);
-    expect(joined).toContain('-c:a aac -b:a 128k -ar 48000 -ac 2');
-    expect(joined).toContain(
-      `-f hls -hls_time ${SEGMENT_SECONDS} -hls_playlist_type vod -hls_segment_type fmp4`,
-    );
-    expect(joined).toContain(
-      '-hls_fmp4_init_filename init.mp4 -hls_segment_filename seg_%03d.m4s index.m3u8',
-    );
+  it('uses every rung for a 1080p source', () => {
+    expect(sizes(source({}))).toEqual([
+      'h264_360p:640x360',
+      'h264_480p:854x480',
+      'h264_720p:1280x720',
+      'h264_1080p:1920x1080',
+    ]);
   });
 
-  it('omits audio mapping and encoding for silent sources', () => {
-    const plan = planRendition(H264_720P, source({ hasAudio: false, audioCodec: null }));
-    const joined = buildRenditionArgs('/in/s.mp4', plan, { preset: 'medium' }).join(' ');
-    expect(joined).not.toContain('0:a:0');
-    expect(joined).not.toContain('-c:a');
+  it('drops rungs that would only duplicate the source resolution', () => {
+    expect(sizes(source({ width: 854, height: 480 }))).toEqual([
+      'h264_360p:640x360',
+      'h264_480p:854x480',
+    ]);
+    expect(sizes(source({ width: 320, height: 240 }))).toEqual(['h264_360p:320x240']);
   });
 
-  it('rejects codecs that are not implemented yet', () => {
-    const plan = planRendition({ ...H264_720P, codec: 'av1', name: 'av1_720p' }, source({}));
-    expect(() => buildRenditionArgs('/in/s.mp4', plan, { preset: 'medium' })).toThrow(
-      /Milestone 8/,
-    );
+  it('caps the top rung at an in-between source size', () => {
+    expect(sizes(source({ width: 1600, height: 900 }))).toEqual([
+      'h264_360p:640x360',
+      'h264_480p:854x480',
+      'h264_720p:1280x720',
+      'h264_1080p:1600x900',
+    ]);
+  });
+
+  it('keeps portrait orientation on every rung', () => {
+    expect(sizes(source({ width: 1080, height: 1920 }))).toEqual([
+      'h264_360p:360x640',
+      'h264_480p:480x854',
+      'h264_720p:720x1280',
+      'h264_1080p:1080x1920',
+    ]);
   });
 });
 

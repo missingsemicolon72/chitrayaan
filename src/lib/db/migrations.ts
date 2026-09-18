@@ -96,6 +96,17 @@ const migrations: Record<string, Migration> = {
       await db.schema.dropTable('renditions').execute();
     },
   },
+
+  '0003_video_manifests': {
+    async up(db: Kysely<unknown>) {
+      await db.schema.alterTable('videos').addColumn('hls_manifest_key', 'text').execute();
+      await db.schema.alterTable('videos').addColumn('dash_manifest_key', 'text').execute();
+    },
+    async down(db: Kysely<unknown>) {
+      await db.schema.alterTable('videos').dropColumn('dash_manifest_key').execute();
+      await db.schema.alterTable('videos').dropColumn('hls_manifest_key').execute();
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

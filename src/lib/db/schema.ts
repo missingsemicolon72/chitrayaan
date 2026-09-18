@@ -15,6 +15,8 @@ export interface VideosTable {
   width: number | null;
   height: number | null;
   error: string | null;
+  hlsManifestKey: string | null;
+  dashManifestKey: string | null;
   createdAt: string;
   updatedAt: string;
 }

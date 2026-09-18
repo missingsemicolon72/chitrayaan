@@ -81,10 +81,11 @@ describe.skipIf(!REDIS)('transcode queue + worker', () => {
     expect(done?.finishedAt).toMatch(ISO_UTC);
     expect((await t.app.db.videos.get(video.id))?.status).toBe('ready');
 
-    // BullMQ moves the job to `completed` just after the processor resolves; wait for it.
+    // BullMQ moves the job to `completed` just after the processor resolves, and `getState`
+    // snapshots the job fields before reading the state, so wait for the whole picture.
     const live = await waitFor(
       () => t.queue.getState(job.id),
-      (state) => state?.state === 'completed',
+      (s) => s?.state === 'completed' && s.attemptsMade === 1 && s.progress === 100,
     );
     expect(live).toMatchObject({ state: 'completed', attemptsMade: 1, progress: 100 });
   });

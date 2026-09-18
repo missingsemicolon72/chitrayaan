@@ -81,15 +81,28 @@ A finished upload records a `transcode` job and hands it to BullMQ. Run at least
 in the database are the source of truth for status and progress; `GET /api/jobs/:id` also shows
 BullMQ's live view under `queue` when Redis is reachable.
 
-The worker probes the source with ffprobe, then encodes it with FFmpeg into CMAF: fragmented-MP4
-segments (`init.mp4` + `seg_NNN.m4s`, 4 s each, keyframes every 2 s) plus an HLS media playlist.
-Outputs are stored under `videos/<id>/<rendition>/` and recorded in the `renditions` table.
-Currently one rendition is produced, the 720p H.264/AAC rung (sources smaller than 720p are not
-upscaled). Fetch anything under that prefix through the API:
+The worker probes the source with ffprobe, then runs one FFmpeg pass that encodes the whole
+H.264/AAC ladder (360p, 480p, 720p, 1080p; rungs above the source resolution are dropped, never
+upscaled) and packages it as CMAF: fragmented-MP4 segments (4 s, keyframes every 2 s, aligned
+across rungs) written once, with a DASH manifest and HLS playlists generated over the same files.
+Everything lands flat under `videos/<id>/`:
+
+| File                      | What it is                                    |
+| ------------------------- | --------------------------------------------- |
+| `master.mpd`              | DASH manifest (video + audio adaptation sets) |
+| `master.m3u8`             | HLS master playlist (one variant per rung)    |
+| `media_N.m3u8`            | HLS media playlist for stream N               |
+| `init-streamN.m4s`        | CMAF init segment for stream N                |
+| `chunk-streamN-NNNNN.m4s` | CMAF media segments for stream N              |
+
+Stream numbering: video rungs first (ascending), then the single shared audio track. Renditions
+are recorded in the `renditions` table; the manifest keys on the video. `PACKAGE_FORMATS`
+controls which master manifests are published (`hls`, `dash`, or both).
 
 ```sh
-curl -s -H "X-API-Key: $API_KEY" http://127.0.0.1:3000/api/videos/<id>            # has renditions[].playlistUrl
-curl -s -H "X-API-Key: $API_KEY" http://127.0.0.1:3000/api/videos/<id>/h264_720p/index.m3u8
+curl -s -H "X-API-Key: $API_KEY" http://127.0.0.1:3000/api/videos/<id>        # manifests.{hls,dash}, renditions[]
+curl -s -H "X-API-Key: $API_KEY" http://127.0.0.1:3000/api/videos/<id>/master.m3u8
+curl -s -H "X-API-Key: $API_KEY" http://127.0.0.1:3000/api/videos/<id>/master.mpd
 ```
 
 `FFMPEG_PRESET` trades encode speed for bitrate efficiency (`veryfast` is a good dev setting).

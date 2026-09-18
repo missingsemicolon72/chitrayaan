@@ -34,6 +34,7 @@ const processor = createTranscodeProcessor({
   ffmpegPath: config.FFMPEG_PATH,
   ffprobePath: config.FFPROBE_PATH,
   preset: config.FFMPEG_PRESET,
+  formats: config.PACKAGE_FORMATS,
   ...(config.WORK_DIR ? { workDir: config.WORK_DIR } : {}),
 });
 
@@ -60,6 +61,7 @@ log.info(
     queue: TRANSCODE_QUEUE_NAME,
     concurrency: config.WORKER_CONCURRENCY,
     preset: config.FFMPEG_PRESET,
+    formats: config.PACKAGE_FORMATS,
     db: db.backend,
     storage: storage.backend,
   },
