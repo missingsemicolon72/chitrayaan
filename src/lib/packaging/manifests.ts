@@ -15,6 +15,8 @@ export interface MpdRepresentation {
 
 export interface MpdInfo {
   durationSeconds: number | null;
+  /** Number of `<AdaptationSet>` elements (one per codec, plus audio). */
+  adaptationSets: number;
   representations: MpdRepresentation[];
 }
 
@@ -44,9 +46,11 @@ export function parseMpd(xml: string): MpdInfo {
   const mpdTag = /<MPD\b[^>]*>/.exec(xml)?.[0] ?? '';
   const duration = attr(mpdTag, 'mediaPresentationDuration');
   const representations: MpdRepresentation[] = [];
+  let adaptationSets = 0;
 
   const setRe = /<AdaptationSet\b([^>]*)>([\s\S]*?)<\/AdaptationSet>/g;
   for (const set of xml.matchAll(setRe)) {
+    adaptationSets += 1;
     const setTag = `<AdaptationSet${set[1] ?? ''}>`;
     const setContentType =
       attr(setTag, 'contentType') ?? attr(setTag, 'mimeType')?.split('/')[0] ?? 'unknown';
@@ -64,7 +68,11 @@ export function parseMpd(xml: string): MpdInfo {
       });
     }
   }
-  return { durationSeconds: duration ? parseIsoDuration(duration) : null, representations };
+  return {
+    durationSeconds: duration ? parseIsoDuration(duration) : null,
+    adaptationSets,
+    representations,
+  };
 }
 
 export interface HlsVariant {

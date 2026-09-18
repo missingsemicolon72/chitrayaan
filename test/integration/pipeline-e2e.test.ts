@@ -1,10 +1,10 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import pino from 'pino';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { Upload as TusClientUpload } from 'tus-js-client';
 
-import type { Rendition, Video } from '../../src/lib/db/index.js';
+import type { Codec, Rendition, Video } from '../../src/lib/db/index.js';
 import { parseHlsMaster, parseMpd } from '../../src/lib/packaging/index.js';
 import { createTranscodeWorker, type TranscodeWorkerHandle } from '../../src/lib/queue/index.js';
 import { createTranscodeProcessor } from '../../src/worker/processors/transcode.js';
@@ -28,12 +28,10 @@ interface VideoView extends Video {
  */
 describe.skipIf(!READY)('upload to packaged ABR ladder, end to end', () => {
   let t: TestApp;
-  let worker: TranscodeWorkerHandle;
+  let worker: TranscodeWorkerHandle | undefined;
   let headers: Record<string, string>;
 
-  beforeAll(async () => {
-    t = await createTestApp({ listen: true });
-    headers = { 'X-API-Key': t.apiKey };
+  const startWorker = (codecs: readonly Codec[]) => {
     worker = createTranscodeWorker({
       redisUrl: TEST_REDIS_URL,
       prefix: t.queuePrefix,
@@ -45,15 +43,26 @@ describe.skipIf(!READY)('upload to packaged ABR ladder, end to end', () => {
           ffmpegPath: FFMPEG_PATH,
           ffprobePath: FFPROBE_PATH,
           preset: 'ultrafast',
+          av1Preset: 12,
+          codecs,
           // Deliberately not created up front: WORK_DIR may point at a fresh directory.
           workDir: path.join(t.storageRoot, 'work', 'nested'),
         }),
       }),
     });
+  };
+
+  beforeAll(async () => {
+    t = await createTestApp({ listen: true });
+    headers = { 'X-API-Key': t.apiKey };
+  });
+
+  afterEach(async () => {
+    await worker?.close();
+    worker = undefined;
   });
 
   afterAll(async () => {
-    await worker.close();
     await t.close();
   });
 
@@ -87,6 +96,7 @@ describe.skipIf(!READY)('upload to packaged ABR ladder, end to end', () => {
   };
 
   it('packages a 480p source into two rungs with HLS + DASH manifests and serves it all', async () => {
+    startWorker(['h264']);
     const id = await uploadFixture('480p-5s.mp4');
     const job = await settledJob(id);
     expect(job?.error).toBeNull();
@@ -155,6 +165,47 @@ describe.skipIf(!READY)('upload to packaged ABR ladder, end to end', () => {
     }
   }, 120_000);
 
+  it('adds AV1 renditions when CODEC_LADDER opts in, streams numbered H.264 first', async () => {
+    startWorker(['h264', 'av1']);
+    const id = await uploadFixture('480p-5s.mp4');
+    const job = await settledJob(id);
+    expect(job?.error).toBeNull();
+    expect(job?.status).toBe('completed');
+
+    const { body: video } = await getJson<VideoView>(`/api/videos/${id}`);
+    expect(video.status).toBe('ready');
+    // Listed by height then name; stream numbers show H.264 rungs were mapped first.
+    expect(video.renditions.map((r) => `${r.name}:${r.codec}:${r.playlistUrl}`)).toEqual([
+      `av1_360p:av1:/api/videos/${id}/media_2.m3u8`,
+      `h264_360p:h264:/api/videos/${id}/media_0.m3u8`,
+      `av1_480p:av1:/api/videos/${id}/media_3.m3u8`,
+      `h264_480p:h264:/api/videos/${id}/media_1.m3u8`,
+    ]);
+    expect(video.renditions.find((r) => r.name === 'av1_480p')).toMatchObject({
+      width: 854,
+      height: 480,
+      videoBitrateKbps: 900,
+      segmentCount: 2,
+    });
+
+    const mpd = parseMpd(
+      await (await fetch(`${t.baseUrl}${video.manifests.dash!}`, { headers })).text(),
+    );
+    expect(mpd.adaptationSets).toBe(3);
+    expect(
+      mpd.representations.filter((r) => r.codecs?.startsWith('av01')).map((r) => r.height),
+    ).toEqual([360, 480]);
+
+    const master = parseHlsMaster(
+      await (await fetch(`${t.baseUrl}${video.manifests.hls!}`, { headers })).text(),
+    );
+    expect(master.variants.filter((v) => v.codecs?.startsWith('av01'))).toHaveLength(2);
+    expect(master.variants.filter((v) => v.codecs?.startsWith('avc1'))).toHaveLength(2);
+
+    const av1Init = await fetch(`${t.baseUrl}/api/videos/${id}/init-stream3.m4s`, { headers });
+    expect(av1Init.status).toBe(200);
+  }, 180_000);
+
   it('serving refuses traversal, unknown files, and missing keys', async () => {
     const videos = await t.app.db.videos.list({ status: 'ready' });
     const id = videos.items[0]?.id ?? 'none';
@@ -166,6 +217,7 @@ describe.skipIf(!READY)('upload to packaged ABR ladder, end to end', () => {
   });
 
   it('fails the job with a readable error for a non-video upload and marks the video failed', async () => {
+    startWorker(['h264']);
     const id = await uploadFixture('not-a-video.mp4');
     const job = await settledJob(id);
     expect(job?.status).toBe('failed');

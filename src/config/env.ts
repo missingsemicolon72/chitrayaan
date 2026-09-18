@@ -101,6 +101,8 @@ export const envSchema = z
         'veryslow',
       ])
       .default('medium'),
+    /** SVT-AV1 preset, 0 (slowest, best) to 13 (fastest). Only used when CODEC_LADDER has av1. */
+    AV1_PRESET: z.coerce.number().int().min(0).max(13).default(8),
     /** Scratch space for per-job work directories. Defaults to the OS temp directory. */
     WORK_DIR: z.string().min(1).optional(),
 

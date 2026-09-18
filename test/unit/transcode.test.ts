@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  AV1_LADDER,
   GOP_SECONDS,
   H264_720P,
   H264_LADDER,
   interpretProbeOutput,
+  LADDERS,
   parseProgressBlock,
   planLadder,
   planRendition,
   ProbeError,
+  profileByName,
   SEGMENT_SECONDS,
   TailBuffer,
   type MediaInfo,
@@ -38,6 +41,23 @@ describe('ladder profiles', () => {
     ]);
     expect(H264_720P.name).toBe('h264_720p');
     expect(SEGMENT_SECONDS % GOP_SECONDS).toBe(0);
+  });
+
+  it('offers the same rungs as AV1 at lower bitrates, and never HEVC', () => {
+    expect(AV1_LADDER.map((p) => [p.name, p.height, p.codec])).toEqual([
+      ['av1_360p', 360, 'av1'],
+      ['av1_480p', 480, 'av1'],
+      ['av1_720p', 720, 'av1'],
+      ['av1_1080p', 1080, 'av1'],
+    ]);
+    AV1_LADDER.forEach((av1, i) => {
+      const h264 = H264_LADDER[i]!;
+      expect(av1.videoBitrateKbps).toBeLessThan(h264.videoBitrateKbps);
+      expect(av1.videoBitrateKbps).toBeGreaterThan(h264.videoBitrateKbps * 0.5);
+    });
+    expect(Object.keys(LADDERS).sort()).toEqual(['av1', 'h264']);
+    expect(profileByName('av1_720p')?.codec).toBe('av1');
+    expect(profileByName('hevc_720p')).toBeUndefined();
   });
 });
 

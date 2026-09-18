@@ -5,15 +5,56 @@ import { DASH_MANIFEST, HLS_MASTER } from './layout.js';
 export interface LadderEncodeOptions {
   /** libx264 preset. */
   preset: string;
+  /** SVT-AV1 preset (0-13). Required only when a plan uses the av1 codec; defaults to 8. */
+  av1Preset?: number;
+}
+
+/** Per-stream encoder flags for one rung. `i` is the output stream index. */
+function codecArgs(i: number, plan: RenditionPlan, options: LadderEncodeOptions): string[] {
+  const { profile } = plan;
+  const kbps = (n: number) => `${n}k`;
+  switch (profile.codec) {
+    case 'h264':
+      return [
+        `-c:v:${i}`,
+        'libx264',
+        `-preset:v:${i}`,
+        options.preset,
+        `-profile:v:${i}`,
+        'high',
+        `-sc_threshold:v:${i}`,
+        '0',
+        `-b:v:${i}`,
+        kbps(profile.videoBitrateKbps),
+        `-maxrate:v:${i}`,
+        kbps(profile.maxrateKbps),
+        `-bufsize:v:${i}`,
+        kbps(profile.bufsizeKbps),
+      ];
+    case 'av1':
+      // SVT-AV1 (3.x) only accepts a max-bitrate cap in CRF mode and has no CBR for
+      // random-access encoding, so AV1 rungs use plain target-bitrate VBR.
+      return [
+        `-c:v:${i}`,
+        'libsvtav1',
+        `-preset:v:${i}`,
+        String(options.av1Preset ?? 8),
+        `-b:v:${i}`,
+        kbps(profile.videoBitrateKbps),
+      ];
+  }
 }
 
 /**
- * One FFmpeg invocation that decodes the source once, encodes every rung of the ladder, and
- * packages everything as CMAF (decision #9): fragmented-MP4 segments written once, with both a
- * DASH MPD and HLS playlists (master + one media playlist per stream) generated over them.
+ * One FFmpeg invocation that decodes the source once, encodes every rung of every requested
+ * codec ladder, and packages everything as CMAF (decision #9): fragmented-MP4 segments written
+ * once, with both a DASH MPD and HLS playlists (master + one media playlist per stream)
+ * generated over them.
  *
  * Output goes to the current working directory, so run with `cwd` = the output dir.
- * Video streams are mapped in the order of `plans`; the audio track (if any) comes last.
+ * Video streams are mapped in the order of `plans`; the audio track (if any) comes last. Each
+ * codec gets its own DASH adaptation set (players never switch codecs mid-stream); all video
+ * streams share one keyframe clock so segments align across rungs and codecs.
  */
 export function buildLadderArgs(
   sourcePath: string,
@@ -22,9 +63,6 @@ export function buildLadderArgs(
 ): string[] {
   const first = plans[0];
   if (!first) throw new Error('at least one rendition plan is required');
-  if (plans.some((p) => p.profile.codec !== 'h264')) {
-    throw new Error('only h264 rungs are supported yet (AV1 arrives in Milestone 8)');
-  }
   const includeAudio = first.includeAudio;
   const gopFrames = Math.max(1, Math.round(GOP_SECONDS * first.frameRate));
 
@@ -42,32 +80,16 @@ export function buildLadderArgs(
   for (let i = 0; i < plans.length; i += 1) args.push('-map', `[v${i}]`);
   if (includeAudio) args.push('-map', '0:a:0');
 
+  // Shared keyframe clock for every video stream.
   args.push(
-    '-c:v',
-    'libx264',
-    '-preset',
-    options.preset,
-    '-profile:v',
-    'high',
     '-g',
     String(gopFrames),
     '-keyint_min',
     String(gopFrames),
-    '-sc_threshold',
-    '0',
     '-force_key_frames',
     `expr:gte(t,n_forced*${GOP_SECONDS})`,
   );
-  plans.forEach((plan, i) => {
-    args.push(
-      `-b:v:${i}`,
-      `${plan.profile.videoBitrateKbps}k`,
-      `-maxrate:v:${i}`,
-      `${plan.profile.maxrateKbps}k`,
-      `-bufsize:v:${i}`,
-      `${plan.profile.bufsizeKbps}k`,
-    );
-  });
+  plans.forEach((plan, i) => args.push(...codecArgs(i, plan, options)));
 
   if (includeAudio) {
     args.push(
@@ -81,6 +103,16 @@ export function buildLadderArgs(
       String(first.profile.audioChannels),
     );
   }
+
+  // One adaptation set per codec, in first-seen order, then audio.
+  const byCodec = new Map<string, number[]>();
+  plans.forEach((plan, i) => {
+    const list = byCodec.get(plan.profile.codec) ?? [];
+    list.push(i);
+    byCodec.set(plan.profile.codec, list);
+  });
+  const sets = [...byCodec.values()].map((streams, id) => `id=${id},streams=${streams.join(',')}`);
+  if (includeAudio) sets.push(`id=${sets.length},streams=${plans.length}`);
 
   args.push(
     '-f',
@@ -98,7 +130,7 @@ export function buildLadderArgs(
     '-window_size',
     '0',
     '-adaptation_sets',
-    includeAudio ? 'id=0,streams=v id=1,streams=a' : 'id=0,streams=v',
+    sets.join(' '),
     '-hls_playlist',
     '1',
     '-hls_master_name',

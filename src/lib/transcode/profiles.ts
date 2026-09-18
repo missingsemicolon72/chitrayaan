@@ -45,6 +45,34 @@ export const H264_LADDER: readonly RenditionProfile[] = [
 /** Milestone 5's single rendition. */
 export const H264_720P = H264_LADDER[2]!;
 
+function av1(height: number, videoBitrateKbps: number): RenditionProfile {
+  return {
+    name: `av1_${height}p`,
+    codec: 'av1',
+    height,
+    videoBitrateKbps,
+    maxrateKbps: Math.round(videoBitrateKbps * 1.07),
+    bufsizeKbps: videoBitrateKbps * 2,
+    ...AUDIO,
+  };
+}
+
+/**
+ * The same rungs as AV1 (decision #10: opt-in via CODEC_LADDER). Bitrates are ~65% of the
+ * H.264 rung, the usual allowance for AV1's better compression `[default, adjustable]`.
+ */
+export const AV1_LADDER: readonly RenditionProfile[] = [
+  av1(360, 500),
+  av1(480, 900),
+  av1(720, 1800),
+  av1(1080, 3200),
+];
+
+export const LADDERS: Readonly<Record<Codec, readonly RenditionProfile[]>> = {
+  h264: H264_LADDER,
+  av1: AV1_LADDER,
+};
+
 export function profileByName(name: string): RenditionProfile | undefined {
-  return H264_LADDER.find((p) => p.name === name);
+  return [...H264_LADDER, ...AV1_LADDER].find((p) => p.name === name);
 }

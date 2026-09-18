@@ -21,7 +21,14 @@
     },
   };
 
-  const state = { video: null, hls: null, dash: null, pollTimer: null, statsTimer: null };
+  const state = {
+    video: null,
+    hls: null,
+    dash: null,
+    dashTracks: null,
+    pollTimer: null,
+    statsTimer: null,
+  };
 
   const apiBase = () => ($('api-base').value.trim() || window.location.origin).replace(/\/+$/, '');
   const apiKey = () => $('api-key').value.trim();
@@ -47,6 +54,20 @@
 
   function fmtKbps(bps) {
     return `${Math.round(bps / 1000)}k`;
+  }
+
+  /**
+   * `avc1.64001f` -> h264, `av01.0.08M.08` -> av1. dash.js hands over a full MIME string
+   * (`video/mp4;codecs="av01..."`), so match anywhere rather than at the start.
+   */
+  function codecFamily(codecs) {
+    const c = String(codecs || '').toLowerCase();
+    const m = /codecs="?([a-z0-9]+)/.exec(c);
+    const id = m ? m[1] : c.split('.')[0];
+    if (id.startsWith('avc')) return 'h264';
+    if (id.startsWith('av01')) return 'av1';
+    if (id.startsWith('hvc') || id.startsWith('hev')) return 'hevc';
+    return id || '?';
   }
 
   // ---------- connection + video list ----------
@@ -156,7 +177,12 @@
       select.innerHTML = '';
       select.append(new Option('auto', '-1'));
       data.levels.forEach((level, index) => {
-        select.append(new Option(`${level.height}p ${fmtKbps(level.bitrate)}`, String(index)));
+        select.append(
+          new Option(
+            `${codecFamily(level.videoCodec)} ${level.height}p ${fmtKbps(level.bitrate)}`,
+            String(index),
+          ),
+        );
       });
       select.disabled = false;
       $('hls-play').disabled = false;
@@ -168,8 +194,9 @@
     hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
       const level = hls.levels[data.level];
       if (level) {
-        $('hls-current').textContent = `${level.height}p @${fmtKbps(level.bitrate)}`;
-        log('hls', `level switched -> ${level.height}p`);
+        const family = codecFamily(level.videoCodec);
+        $('hls-current').textContent = `${family} ${level.height}p @${fmtKbps(level.bitrate)}`;
+        log('hls', `level switched -> ${family} ${level.height}p (${level.videoCodec})`);
       }
     });
     hls.on(Hls.Events.ERROR, (_event, data) => {
@@ -206,6 +233,7 @@
     $('dash-log').textContent = '';
     $('dash-play').disabled = true;
     $('dash-quality').disabled = true;
+    $('dash-track').disabled = true;
 
     if (!window.dashjs) {
       log('dash', 'dash.js failed to load');
@@ -244,23 +272,52 @@
     player.updateSettings({ streaming: { abr: { autoSwitchBitrate: { video: true } } } });
     log('dash', `loading ${url}`);
 
-    player.on(events.STREAM_INITIALIZED, () => {
+    // One DASH video track per codec (each codec is its own AdaptationSet); the quality list
+    // shows the representations of the current track.
+    const fillDashQualities = () => {
       const reps = player.getRepresentationsByType('video');
       const select = $('dash-quality');
       select.innerHTML = '';
       select.append(new Option('auto', 'auto'));
       for (const rep of reps) {
-        select.append(new Option(`${rep.height}p ${fmtKbps(rep.bandwidth)}`, rep.id));
+        select.append(
+          new Option(`${codecFamily(rep.codecs)} ${rep.height}p ${fmtKbps(rep.bandwidth)}`, rep.id),
+        );
       }
       select.disabled = false;
+      return reps.length;
+    };
+    const fillDashTracks = () => {
+      const tracks = player.getTracksFor('video');
+      const current = player.getCurrentTrackFor('video');
+      const select = $('dash-track');
+      select.innerHTML = '';
+      tracks.forEach((track, index) => {
+        const codecId = /codecs="?([^";]+)/.exec(String(track.codec || ''))?.[1] ?? track.codec;
+        const option = new Option(`${codecFamily(track.codec)} (${codecId})`, String(index));
+        option.selected = current !== null && track.id === current.id;
+        select.append(option);
+      });
+      select.disabled = tracks.length < 2;
+      state.dashTracks = tracks;
+      return tracks.length;
+    };
+
+    player.on(events.STREAM_INITIALIZED, () => {
+      const tracks = fillDashTracks();
+      const reps = fillDashQualities();
       $('dash-play').disabled = false;
-      log('dash', `stream initialized: ${reps.length} video representation(s)`);
+      log(
+        'dash',
+        `stream initialized: ${tracks} video track(s), ${reps} representation(s) in the current one`,
+      );
     });
     player.on(events.QUALITY_CHANGE_RENDERED, (e) => {
       if (e.mediaType !== 'video' || !e.newRepresentation) return;
       const r = e.newRepresentation;
-      $('dash-current').textContent = `${r.height}p @${fmtKbps(r.bandwidth)}`;
-      log('dash', `quality rendered -> ${r.height}p`);
+      const family = codecFamily(r.codecs);
+      $('dash-current').textContent = `${family} ${r.height}p @${fmtKbps(r.bandwidth)}`;
+      log('dash', `quality rendered -> ${family} ${r.height}p (${r.codecs})`);
     });
     player.on(events.ERROR, (e) => {
       const err = e.error || {};
@@ -272,6 +329,26 @@
 
     player.initialize(video, url, false);
   }
+
+  $('dash-track').addEventListener('change', (event) => {
+    if (!state.dash || !state.dashTracks) return;
+    const track = state.dashTracks[Number(event.target.value)];
+    if (!track) return;
+    state.dash.setCurrentTrack(track);
+    log('dash', `video track -> ${codecFamily(track.codec)} (${track.codec})`);
+    // Representations belong to the track; refresh the quality list once it has switched.
+    setTimeout(() => {
+      const reps = state.dash.getRepresentationsByType('video');
+      const select = $('dash-quality');
+      select.innerHTML = '';
+      select.append(new Option('auto', 'auto'));
+      for (const rep of reps) {
+        select.append(
+          new Option(`${codecFamily(rep.codecs)} ${rep.height}p ${fmtKbps(rep.bandwidth)}`, rep.id),
+        );
+      }
+    }, 500);
+  });
 
   $('dash-quality').addEventListener('change', (event) => {
     if (!state.dash) return;

@@ -95,9 +95,17 @@ Everything lands flat under `videos/<id>/`:
 | `init-streamN.m4s`        | CMAF init segment for stream N                |
 | `chunk-streamN-NNNNN.m4s` | CMAF media segments for stream N              |
 
-Stream numbering: video rungs first (ascending), then the single shared audio track. Renditions
-are recorded in the `renditions` table; the manifest keys on the video. `PACKAGE_FORMATS`
-controls which master manifests are published (`hls`, `dash`, or both).
+Stream numbering: H.264 rungs first (ascending), then AV1 rungs if enabled, then the single
+shared audio track. Renditions are recorded in the `renditions` table; the manifest keys on the
+video. `PACKAGE_FORMATS` controls which master manifests are published (`hls`, `dash`, or both).
+
+### AV1 (opt-in)
+
+`CODEC_LADDER=h264,av1` adds an AV1 copy of every rung (SVT-AV1, `AV1_PRESET` 0-13) in the same
+FFmpeg pass. H.264 is always present so every player has something to play; AV1 lands in its
+own DASH adaptation set and as extra HLS variants (`CODECS="av01..."`), and clients that decode
+AV1 (Chrome, Firefox, Edge, recent Android) can pick it. Expect encoding to take roughly two to
+three times longer than H.264 alone. H.265/HEVC is deliberately not available (CLAUDE.md #11).
 
 ```sh
 curl -s -H "X-API-Key: $API_KEY" http://127.0.0.1:3000/api/videos/<id>        # manifests.{hls,dash}, renditions[]

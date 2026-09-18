@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { buildLadderArgs, parseHlsMaster, parseMpd } from '../../src/lib/packaging/index.js';
 import {
+  AV1_LADDER,
   FfmpegError,
   H264_LADDER,
   planLadder,
@@ -68,12 +69,12 @@ describe.skipIf(!FFMPEG)('full H.264 ladder packaged as CMAF (DASH + HLS)', () =
     await rm(outDir, { recursive: true, force: true });
   });
 
-  async function encodeLadder(fixture: string) {
+  async function encodeLadder(fixture: string, av1 = false) {
     const src = fixturePath(fixture);
     const info = await probe(src, { ffprobePath: FFPROBE_PATH });
-    const plans = planLadder(H264_LADDER, info);
+    const plans = [...planLadder(H264_LADDER, info), ...(av1 ? planLadder(AV1_LADDER, info) : [])];
     const progress: FfmpegProgress[] = [];
-    await runFfmpeg(buildLadderArgs(src, plans, { preset: 'ultrafast' }), {
+    await runFfmpeg(buildLadderArgs(src, plans, { preset: 'ultrafast', av1Preset: 12 }), {
       ffmpegPath: FFMPEG_PATH,
       cwd: outDir,
       durationSeconds: info.durationSeconds,
@@ -161,6 +162,46 @@ describe.skipIf(!FFMPEG)('full H.264 ladder packaged as CMAF (DASH + HLS)', () =
     const low = await probe(path.join(outDir, 'media_0.m3u8'), { ffprobePath: FFPROBE_PATH });
     expect([low.width, low.height, low.frameRate]).toEqual([640, 360, 25]);
   }, 90_000);
+
+  it('adds AV1 rungs as their own adaptation set and HLS variants, aligned with H.264', async () => {
+    const { plans, files, mpd, master } = await encodeLadder('480p-5s.mp4', true);
+    expect(plans.map((p) => p.profile.name)).toEqual([
+      'h264_360p',
+      'h264_480p',
+      'av1_360p',
+      'av1_480p',
+    ]);
+    // Streams 0-1 h264, 2-3 av1, 4 audio; every video stream has the same segment count.
+    for (const i of [0, 1, 2, 3, 4]) {
+      expect(files, `init ${i}`).toContain(`init-stream${i}.m4s`);
+      expect(
+        files.filter((f) => f.startsWith(`chunk-stream${i}-`)),
+        `chunks ${i}`,
+      ).toHaveLength(2);
+    }
+
+    const video = mpd.representations.filter((r) => r.contentType === 'video');
+    expect(video.map((r) => `${r.codecs?.split('.')[0]}:${r.height}`)).toEqual([
+      'avc1:360',
+      'avc1:480',
+      'av01:360',
+      'av01:480',
+    ]);
+    expect(video.map((r) => r.bandwidth)).toEqual([800_000, 1_400_000, 500_000, 900_000]);
+    // Three adaptation sets: h264 video, av1 video, audio.
+    expect(mpd.adaptationSets).toBe(3);
+
+    expect(master.variants.map((v) => `${v.codecs?.split('.')[0]}:${v.height}`)).toEqual([
+      'avc1:360',
+      'avc1:480',
+      'av01:360',
+      'av01:480',
+    ]);
+
+    const av1 = await probe(path.join(outDir, 'media_3.m3u8'), { ffprobePath: FFPROBE_PATH });
+    expect(av1).toMatchObject({ videoCodec: 'av1', width: 854, height: 480 });
+    expect(av1.durationSeconds).toBeCloseTo(5, 0);
+  }, 120_000);
 
   it('packages a silent source without an audio adaptation set or media group', async () => {
     const { files, mpd, master } = await encodeLadder('silent-720p-5s.mp4');

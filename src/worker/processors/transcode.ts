@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import type { NewRendition } from '../../lib/db/index.js';
+import type { Codec, NewRendition } from '../../lib/db/index.js';
 import type { Logger } from '../../lib/logger.js';
 import {
   buildLadderArgs,
@@ -19,14 +19,7 @@ import {
   LocalDiskStorage,
   type ObjectStorage,
 } from '../../lib/storage/index.js';
-import {
-  H264_LADDER,
-  planLadder,
-  probe,
-  ProbeError,
-  runFfmpeg,
-  type RenditionProfile,
-} from '../../lib/transcode/index.js';
+import { LADDERS, planLadder, probe, ProbeError, runFfmpeg } from '../../lib/transcode/index.js';
 import type { TranscodeProcessor } from '../types.js';
 
 export interface TranscodeProcessorOptions {
@@ -34,10 +27,15 @@ export interface TranscodeProcessorOptions {
   ffprobePath: string;
   /** libx264 preset. */
   preset: string;
+  /** SVT-AV1 preset (0-13), used when `codecs` includes av1. Defaults to 8. */
+  av1Preset?: number;
   /** Parent directory for per-job scratch space; defaults to the OS temp dir. */
   workDir?: string;
-  /** Rungs to encode (capped at the source resolution). Defaults to the full H.264 ladder. */
-  ladder?: readonly RenditionProfile[];
+  /**
+   * Codec ladders to encode (`CODEC_LADDER`): each codec's full ladder, capped at the source
+   * resolution. Defaults to H.264 only.
+   */
+  codecs?: readonly Codec[];
   /** Which master manifests to publish. Defaults to both. */
   formats?: readonly PackageFormat[];
 }
@@ -75,8 +73,9 @@ async function materializeSource(
  * so the queue never retries them; encoder failures are ordinary errors.
  */
 export function createTranscodeProcessor(options: TranscodeProcessorOptions): TranscodeProcessor {
-  const ladder = options.ladder ?? H264_LADDER;
+  const codecs = options.codecs ?? ['h264'];
   const formats = options.formats ?? ['hls', 'dash'];
+  const av1Preset = options.av1Preset ?? 8;
 
   return async ({ job, video, db, storage, log, reportProgress }) => {
     if (!video.sourceKey) throw new UnrecoverableError(`video ${video.id} has no source file`);
@@ -117,15 +116,17 @@ export function createTranscodeProcessor(options: TranscodeProcessorOptions): Tr
       );
       await reportProgress(ENCODE_START);
 
-      const plans = planLadder(ladder, info);
+      // H.264 rungs first, then any opt-in codec's rungs, so stream numbering stays stable.
+      const plans = codecs.flatMap((codec) => planLadder(LADDERS[codec], info));
       const outDir = path.join(workDir, 'out');
       await mkdir(outDir);
-      const args = buildLadderArgs(sourcePath, plans, { preset: options.preset });
+      const args = buildLadderArgs(sourcePath, plans, { preset: options.preset, av1Preset });
       log.info(
         {
           rungs: plans.map((p) => `${p.profile.name}@${p.width}x${p.height}`),
           audio: plans[0]?.includeAudio ?? false,
           preset: options.preset,
+          ...(codecs.includes('av1') ? { av1Preset } : {}),
         },
         'encoding ladder',
       );

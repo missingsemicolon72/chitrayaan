@@ -16,9 +16,11 @@ export {
   type ProbeOptions,
 } from './probe.js';
 export {
+  AV1_LADDER,
   GOP_SECONDS,
   H264_720P,
   H264_LADDER,
+  LADDERS,
   profileByName,
   SEGMENT_SECONDS,
   type RenditionProfile,
