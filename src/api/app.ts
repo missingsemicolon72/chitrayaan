@@ -9,6 +9,7 @@ import { createStorage, type ObjectStorage } from '../lib/storage/index.js';
 import { registerApiKeyAuth } from './plugins/auth.js';
 import { healthRoutes } from './routes/health.js';
 import { jobRoutes } from './routes/jobs.js';
+import { PLAYER_PREFIX, playerRoutes } from './routes/player.js';
 import { uploadRoutes } from './routes/uploads.js';
 import { videoRoutes } from './routes/videos.js';
 
@@ -83,13 +84,15 @@ export async function buildApp(
 
   app.log.info({ db: db.backend, storage: storage.backend }, 'storage and database ready');
 
-  // Auth is registered before any routes so it applies to every plugin below.
-  registerApiKeyAuth(app, config.API_KEY);
+  // Auth is registered before any routes so it applies to every plugin below. The test player
+  // page and its libraries are static files with no data in them, so they are served openly.
+  registerApiKeyAuth(app, config.API_KEY, { publicPrefixes: [PLAYER_PREFIX] });
 
   await app.register(healthRoutes);
   await app.register(videoRoutes);
   await app.register(jobRoutes);
   await app.register(uploadRoutes);
+  await app.register(playerRoutes);
 
   const reconciled = await reconcileQueuedJobs(db, queue, app.log);
   if (reconciled > 0) app.log.info({ count: reconciled }, 'reconciled pending jobs into queue');

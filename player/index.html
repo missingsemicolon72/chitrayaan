@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chitrayaan test player</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Chitrayaan test player</h1>
+      <p class="muted">
+        Manual playback check for packaged videos: HLS via hls.js, DASH via dash.js. Every request
+        to the API carries the <code>X-API-Key</code> header entered below.
+      </p>
+    </header>
+
+    <section class="panel" id="connection">
+      <h2>Connection</h2>
+      <div class="row">
+        <label>
+          API base
+          <input id="api-base" type="text" placeholder="same origin" spellcheck="false" />
+        </label>
+        <label>
+          API key
+          <input id="api-key" type="password" placeholder="X-API-Key" spellcheck="false" />
+        </label>
+        <button id="connect" type="button">Connect &amp; list videos</button>
+      </div>
+      <p id="connection-status" class="status"></p>
+    </section>
+
+    <section class="panel" id="video-select">
+      <h2>Video</h2>
+      <div class="row">
+        <label>
+          Ready videos
+          <select id="video-list">
+            <option value="">(connect first)</option>
+          </select>
+        </label>
+        <label>
+          or video id
+          <input id="video-id" type="text" placeholder="paste a video id" spellcheck="false" />
+        </label>
+        <button id="load" type="button">Load</button>
+        <button id="refresh" type="button" class="secondary">Refresh</button>
+      </div>
+      <div id="video-details" class="details" hidden>
+        <dl>
+          <dt>Status</dt>
+          <dd id="d-status"></dd>
+          <dt>Source</dt>
+          <dd id="d-source"></dd>
+          <dt>Job</dt>
+          <dd id="d-job"></dd>
+          <dt>HLS</dt>
+          <dd id="d-hls"></dd>
+          <dt>DASH</dt>
+          <dd id="d-dash"></dd>
+        </dl>
+        <table id="renditions">
+          <thead>
+            <tr>
+              <th>Rendition</th>
+              <th>Size</th>
+              <th>Video kbps</th>
+              <th>Audio kbps</th>
+              <th>Segments</th>
+              <th>Bytes</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="players">
+      <div class="panel player" id="hls-panel">
+        <h2>
+          HLS <span class="muted">hls.js <span id="hls-version"></span></span>
+        </h2>
+        <video id="hls-video" controls playsinline muted></video>
+        <div class="row controls">
+          <button id="hls-play" type="button" disabled>Play HLS</button>
+          <label>
+            Quality
+            <select id="hls-quality" disabled>
+              <option value="-1">auto</option>
+            </select>
+          </label>
+          <span class="stat">now: <strong id="hls-current">-</strong></span>
+          <span class="stat">buffer: <strong id="hls-buffer">-</strong>s</span>
+          <span class="stat">position: <strong id="hls-position">-</strong>s</span>
+        </div>
+        <pre id="hls-log" class="log"></pre>
+      </div>
+
+      <div class="panel player" id="dash-panel">
+        <h2>
+          DASH <span class="muted">dash.js <span id="dash-version"></span></span>
+        </h2>
+        <video id="dash-video" controls playsinline muted></video>
+        <div class="row controls">
+          <button id="dash-play" type="button" disabled>Play DASH</button>
+          <label>
+            Quality
+            <select id="dash-quality" disabled>
+              <option value="auto">auto</option>
+            </select>
+          </label>
+          <span class="stat">now: <strong id="dash-current">-</strong></span>
+          <span class="stat">buffer: <strong id="dash-buffer">-</strong>s</span>
+          <span class="stat">position: <strong id="dash-position">-</strong>s</span>
+        </div>
+        <pre id="dash-log" class="log"></pre>
+      </div>
+    </section>
+
+    <script src="vendor/hls/hls.min.js"></script>
+    <script src="vendor/dash/dash.all.min.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

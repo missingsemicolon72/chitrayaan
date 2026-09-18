@@ -111,6 +111,17 @@ If Redis is down when an upload finishes, the upload still succeeds and the job 
 in the database; the API enqueues such jobs again the next time it starts. `/healthz` reports
 `redis: error` (HTTP 503) in the meantime.
 
+## Test player
+
+With the API running, open `http://127.0.0.1:3000/player/` in a browser. Enter the API key,
+pick a ready video, and play it through hls.js (HLS) and dash.js (DASH) side by side. The page
+shows the ladder, the active rendition, buffer level and an event log, and lets you pin a
+quality. The page and the player libraries are served without a key (a browser cannot attach
+custom headers to a page load); every manifest and segment request it makes carries the key.
+The key is remembered in the browser's local storage for convenience. Deep links work too:
+`/player/?key=<API_KEY>&video=<id>&autoplay=1` connects, loads that video and starts both
+players (the key is moved into local storage and removed from the address bar on load).
+
 ## Layout
 
 ```
