@@ -3,7 +3,8 @@ import { createDatabase } from '../lib/db/index.js';
 import { createLogger } from '../lib/logger.js';
 import { createTranscodeWorker, TRANSCODE_QUEUE_NAME } from '../lib/queue/index.js';
 import { createStorage } from '../lib/storage/index.js';
-import { placeholderProcessor } from './processors/placeholder.js';
+import { binaryVersion } from '../lib/transcode/index.js';
+import { createTranscodeProcessor } from './processors/transcode.js';
 import { createJobRunner } from './runner.js';
 
 /**
@@ -13,15 +14,34 @@ import { createJobRunner } from './runner.js';
 const config = bootstrapConfig();
 const log = createLogger(config, 'worker');
 
+// Fail fast if FFmpeg is missing: every job would fail otherwise.
+try {
+  const [ffmpeg, ffprobe] = await Promise.all([
+    binaryVersion(config.FFMPEG_PATH),
+    binaryVersion(config.FFPROBE_PATH),
+  ]);
+  log.info({ ffmpeg, ffprobe }, 'ffmpeg available');
+} catch (err) {
+  log.fatal({ err }, 'ffmpeg/ffprobe not runnable; set FFMPEG_PATH / FFPROBE_PATH');
+  process.exit(1);
+}
+
 const db = await createDatabase(config);
 await db.migrate();
 const storage = await createStorage(config);
+
+const processor = createTranscodeProcessor({
+  ffmpegPath: config.FFMPEG_PATH,
+  ffprobePath: config.FFPROBE_PATH,
+  preset: config.FFMPEG_PRESET,
+  ...(config.WORK_DIR ? { workDir: config.WORK_DIR } : {}),
+});
 
 let lastRedisErrorAt = 0;
 const handle = createTranscodeWorker({
   redisUrl: config.REDIS_URL,
   concurrency: config.WORKER_CONCURRENCY,
-  processor: createJobRunner({ db, storage, processor: placeholderProcessor, log }),
+  processor: createJobRunner({ db, storage, processor, log }),
   onError: (err) => {
     // ioredis emits one error per reconnect attempt; keep the log readable.
     const now = Date.now();
@@ -39,6 +59,7 @@ log.info(
   {
     queue: TRANSCODE_QUEUE_NAME,
     concurrency: config.WORKER_CONCURRENCY,
+    preset: config.FFMPEG_PRESET,
     db: db.backend,
     storage: storage.backend,
   },

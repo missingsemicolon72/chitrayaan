@@ -84,6 +84,26 @@ export const envSchema = z
     /** Transcode jobs one worker process runs at once. FFmpeg is CPU-bound, so keep this low. */
     WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(1),
 
+    // Transcoding (FFmpeg does the real work; these locate and tune it)
+    FFMPEG_PATH: z.string().min(1).default('ffmpeg'),
+    FFPROBE_PATH: z.string().min(1).default('ffprobe'),
+    /** libx264 speed/quality trade-off. `medium` is x264's default; faster presets cost bitrate. */
+    FFMPEG_PRESET: z
+      .enum([
+        'ultrafast',
+        'superfast',
+        'veryfast',
+        'faster',
+        'fast',
+        'medium',
+        'slow',
+        'slower',
+        'veryslow',
+      ])
+      .default('medium'),
+    /** Scratch space for per-job work directories. Defaults to the OS temp directory. */
+    WORK_DIR: z.string().min(1).optional(),
+
     // Packaging + codec ladder (decisions #9, #10, #11)
     PACKAGE_FORMATS: commaList(PACKAGE_FORMATS, 'hls,dash'),
     CODEC_LADDER: commaList(CODECS, 'h264').refine((codecs) => codecs.includes('h264'), {

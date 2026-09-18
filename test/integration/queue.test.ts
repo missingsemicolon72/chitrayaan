@@ -3,9 +3,18 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { buildApp } from '../../src/api/app.js';
 import { createTranscodeWorker, type TranscodeWorkerHandle } from '../../src/lib/queue/index.js';
-import { placeholderProcessor } from '../../src/worker/processors/placeholder.js';
 import { createJobRunner } from '../../src/worker/runner.js';
 import type { TranscodeProcessor } from '../../src/worker/types.js';
+
+/** Stand-in for the real transcode: just checks the source exists and reports progress. */
+const statSourceProcessor: TranscodeProcessor = async ({ video, storage, reportProgress }) => {
+  if (!video.sourceKey) throw new Error(`video ${video.id} has no source file recorded`);
+  if (!(await storage.exists(video.sourceKey))) {
+    throw new Error(`source object ${video.sourceKey} not found in storage`);
+  }
+  await reportProgress(50);
+  await reportProgress(100);
+};
 import { createTestApp, type TestApp } from '../helpers/app.js';
 import { redisAvailable, TEST_REDIS_URL } from '../helpers/redis.js';
 import { waitFor } from '../helpers/wait.js';
@@ -18,7 +27,7 @@ describe.skipIf(!REDIS)('transcode queue + worker', () => {
   let t: TestApp;
   let worker: TranscodeWorkerHandle | undefined;
 
-  const startWorker = (processor: TranscodeProcessor = placeholderProcessor) => {
+  const startWorker = (processor: TranscodeProcessor = statSourceProcessor) => {
     worker = createTranscodeWorker({
       redisUrl: TEST_REDIS_URL,
       prefix: t.queuePrefix,
@@ -47,7 +56,7 @@ describe.skipIf(!REDIS)('transcode queue + worker', () => {
     await t.close();
   });
 
-  it('runs a queued job through the placeholder processor and records every transition', async () => {
+  it('runs a queued job through a processor and records every transition', async () => {
     await t.app.storage.put('uploads/vid-ok', 'fake source bytes');
     const video = await t.app.db.videos.create({
       id: 'vid-ok',

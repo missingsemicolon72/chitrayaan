@@ -9,6 +9,10 @@ export type JobType = (typeof JOB_TYPES)[number];
 export const JOB_STATUSES = ['queued', 'active', 'completed', 'failed'] as const;
 export type JobStatus = (typeof JOB_STATUSES)[number];
 
+/** Decision #10/#11: H.264 always, AV1 opt-in, HEVC never. */
+export const CODECS = ['h264', 'av1'] as const;
+export type Codec = (typeof CODECS)[number];
+
 /** A video asset: one uploaded source file and everything derived from it. */
 export interface Video {
   id: string;
@@ -87,6 +91,28 @@ export type JobPatch = Partial<
   >
 >;
 
+/** One encoded, packaged output of a video: a rung of the ladder in one codec. */
+export interface Rendition {
+  id: string;
+  videoId: string;
+  /** e.g. `h264_720p`; also the directory under `videos/<id>/`. */
+  name: string;
+  codec: Codec;
+  width: number;
+  height: number;
+  videoBitrateKbps: number;
+  /** Null when the source had no audio. */
+  audioBitrateKbps: number | null;
+  /** Storage key of this rendition's HLS media playlist. */
+  playlistKey: string;
+  segmentCount: number;
+  sizeBytes: number | null;
+  durationSeconds: number | null;
+  createdAt: string;
+}
+
+export type NewRendition = Omit<Rendition, 'id' | 'createdAt'>;
+
 export interface Page<T> {
   items: T[];
   total: number;
@@ -130,11 +156,18 @@ export interface JobRepository {
   delete(id: string): Promise<boolean>;
 }
 
+export interface RenditionRepository {
+  listForVideo(videoId: string): Promise<Rendition[]>;
+  /** Atomically replace the video's renditions (a re-transcode discards the old set). */
+  replaceForVideo(videoId: string, renditions: NewRendition[]): Promise<Rendition[]>;
+}
+
 /** Metadata database abstraction (decision #7: SQLite for local mode, Postgres for cloud mode). */
 export interface Database {
   readonly backend: DbBackend;
   readonly videos: VideoRepository;
   readonly jobs: JobRepository;
+  readonly renditions: RenditionRepository;
   /** Apply any pending schema migrations. Safe to call on every startup. */
   migrate(): Promise<void>;
   /** Cheap round-trip used by `/healthz`. Rejects if the database is unreachable. */

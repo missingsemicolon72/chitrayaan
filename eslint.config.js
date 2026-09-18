@@ -36,5 +36,10 @@ export default defineConfig(
     files: ['**/*.js', '**/*.mjs', '**/*.cjs'],
     extends: [tseslint.configs.disableTypeChecked],
   },
+  {
+    // Test tooling (fixture generator, sample runner) reports to the console on purpose.
+    files: ['test/**'],
+    rules: { 'no-console': 'off' },
+  },
   prettier,
 );

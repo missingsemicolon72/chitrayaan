@@ -64,6 +64,38 @@ const migrations: Record<string, Migration> = {
       await db.schema.dropTable('videos').execute();
     },
   },
+
+  '0002_renditions': {
+    async up(db: Kysely<unknown>) {
+      await db.schema
+        .createTable('renditions')
+        .addColumn('id', 'text', (c) => c.primaryKey())
+        .addColumn('video_id', 'text', (c) =>
+          c.notNull().references('videos.id').onDelete('cascade'),
+        )
+        .addColumn('name', 'text', (c) => c.notNull())
+        .addColumn('codec', 'text', (c) => c.notNull())
+        .addColumn('width', 'integer', (c) => c.notNull())
+        .addColumn('height', 'integer', (c) => c.notNull())
+        .addColumn('video_bitrate_kbps', 'integer', (c) => c.notNull())
+        .addColumn('audio_bitrate_kbps', 'integer')
+        .addColumn('playlist_key', 'text', (c) => c.notNull())
+        .addColumn('segment_count', 'integer', (c) => c.notNull().defaultTo(0))
+        .addColumn('size_bytes', 'bigint')
+        .addColumn('duration_seconds', 'real')
+        .addColumn('created_at', 'text', (c) => c.notNull())
+        .addUniqueConstraint('renditions_video_id_name_unique', ['video_id', 'name'])
+        .execute();
+      await db.schema
+        .createIndex('renditions_video_id_idx')
+        .on('renditions')
+        .column('video_id')
+        .execute();
+    },
+    async down(db: Kysely<unknown>) {
+      await db.schema.dropTable('renditions').execute();
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

@@ -31,6 +31,11 @@ cp .env.example .env   # then set API_KEY to a long random string
 | `npm run format:check` | Prettier check (`npm run format` to write)               |
 | `npm test`             | Vitest, single run (`npm run test:watch` for watch mode) |
 | `npm run check`        | typecheck + lint + format check + tests, in that order   |
+| `npm run fixtures`     | Generate the synthetic test clips (also done by `test`)  |
+
+Tests that need Redis or FFmpeg skip themselves (with a console warning) when those are missing.
+To validate against your own clips, drop them in `test/samples/` (gitignored) and run
+`RUN_SAMPLE_TESTS=1 npm test -- samples`; this is slow by design and not part of `check`.
 
 ## Configuration
 
@@ -75,6 +80,19 @@ A finished upload records a `transcode` job and hands it to BullMQ. Run at least
 (`npm run dev:worker`) to consume the queue; it shares the API's database and storage. Job rows
 in the database are the source of truth for status and progress; `GET /api/jobs/:id` also shows
 BullMQ's live view under `queue` when Redis is reachable.
+
+The worker probes the source with ffprobe, then encodes it with FFmpeg into CMAF: fragmented-MP4
+segments (`init.mp4` + `seg_NNN.m4s`, 4 s each, keyframes every 2 s) plus an HLS media playlist.
+Outputs are stored under `videos/<id>/<rendition>/` and recorded in the `renditions` table.
+Currently one rendition is produced, the 720p H.264/AAC rung (sources smaller than 720p are not
+upscaled). Fetch anything under that prefix through the API:
+
+```sh
+curl -s -H "X-API-Key: $API_KEY" http://127.0.0.1:3000/api/videos/<id>            # has renditions[].playlistUrl
+curl -s -H "X-API-Key: $API_KEY" http://127.0.0.1:3000/api/videos/<id>/h264_720p/index.m3u8
+```
+
+`FFMPEG_PRESET` trades encode speed for bitrate efficiency (`veryfast` is a good dev setting).
 
 If Redis is down when an upload finishes, the upload still succeeds and the job stays `queued`
 in the database; the API enqueues such jobs again the next time it starts. `/healthz` reports

@@ -1,4 +1,4 @@
-import type { JobStatus, JobType, VideoStatus } from './types.js';
+import type { Codec, JobStatus, JobType, VideoStatus } from './types.js';
 
 /**
  * Kysely table types. Property names are camelCase; `CamelCasePlugin` maps them to the
@@ -34,7 +34,24 @@ export interface JobsTable {
   updatedAt: string;
 }
 
+export interface RenditionsTable {
+  id: string;
+  videoId: string;
+  name: string;
+  codec: Codec;
+  width: number;
+  height: number;
+  videoBitrateKbps: number;
+  audioBitrateKbps: number | null;
+  playlistKey: string;
+  segmentCount: number;
+  sizeBytes: number | null;
+  durationSeconds: number | null;
+  createdAt: string;
+}
+
 export interface DatabaseSchema {
   videos: VideosTable;
   jobs: JobsTable;
+  renditions: RenditionsTable;
 }

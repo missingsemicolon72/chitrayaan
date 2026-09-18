@@ -147,6 +147,69 @@ export function describeDatabaseContract(
       });
     });
 
+    describe('renditions', () => {
+      const rendition = (videoId: string, name: string, height: number) => ({
+        videoId,
+        name,
+        codec: 'h264' as const,
+        width: Math.round((height * 16) / 9),
+        height,
+        videoBitrateKbps: height * 4,
+        audioBitrateKbps: 128,
+        playlistKey: `videos/${videoId}/${name}/index.m3u8`,
+        segmentCount: 3,
+        sizeBytes: 5_000_000_000,
+        durationSeconds: 12.5,
+      });
+
+      it('replaces the set atomically and lists by ascending height', async () => {
+        const video = await db.videos.create({});
+        expect(await db.renditions.listForVideo(video.id)).toEqual([]);
+
+        const first = await db.renditions.replaceForVideo(video.id, [
+          rendition(video.id, 'h264_720p', 720),
+          rendition(video.id, 'h264_360p', 360),
+        ]);
+        expect(first.map((r) => r.name)).toEqual(['h264_360p', 'h264_720p']);
+        expect(first[0]).toMatchObject({
+          videoId: video.id,
+          codec: 'h264',
+          width: 640,
+          height: 360,
+          sizeBytes: 5_000_000_000,
+          durationSeconds: 12.5,
+        });
+        expect(first[0]?.id).toMatch(UUID);
+        expect(first[0]?.createdAt).toMatch(ISO_UTC);
+
+        const second = await db.renditions.replaceForVideo(video.id, [
+          { ...rendition(video.id, 'h264_720p', 720), audioBitrateKbps: null, sizeBytes: null },
+        ]);
+        expect(second).toHaveLength(1);
+        expect(second[0]).toMatchObject({
+          name: 'h264_720p',
+          audioBitrateKbps: null,
+          sizeBytes: null,
+        });
+        expect(await db.renditions.listForVideo(video.id)).toEqual(second);
+
+        expect(await db.renditions.replaceForVideo(video.id, [])).toEqual([]);
+      });
+
+      it('is scoped per video and removed with the video', async () => {
+        const a = await db.videos.create({});
+        const b = await db.videos.create({});
+        await db.renditions.replaceForVideo(a.id, [rendition(a.id, 'h264_720p', 720)]);
+        await db.renditions.replaceForVideo(b.id, [rendition(b.id, 'h264_480p', 480)]);
+        expect((await db.renditions.listForVideo(a.id)).map((r) => r.name)).toEqual(['h264_720p']);
+        expect((await db.renditions.listForVideo(b.id)).map((r) => r.name)).toEqual(['h264_480p']);
+
+        await db.videos.delete(a.id);
+        expect(await db.renditions.listForVideo(a.id)).toEqual([]);
+        expect(await db.renditions.listForVideo(b.id)).toHaveLength(1);
+      });
+    });
+
     describe('jobs', () => {
       it('creates with defaults, tied to an existing video', async () => {
         const video = await db.videos.create({});

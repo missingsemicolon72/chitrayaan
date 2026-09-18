@@ -4,7 +4,7 @@ import { sql, type Kysely } from 'kysely';
 import { Migrator } from 'kysely/migration';
 
 import { migrationProvider } from './migrations.js';
-import type { DatabaseSchema, JobsTable, VideosTable } from './schema.js';
+import type { DatabaseSchema, JobsTable, RenditionsTable, VideosTable } from './schema.js';
 import {
   DbError,
   RecordNotFoundError,
@@ -15,8 +15,11 @@ import {
   type JobPatch,
   type JobRepository,
   type NewJob,
+  type NewRendition,
   type NewVideo,
   type Page,
+  type Rendition,
+  type RenditionRepository,
   type Video,
   type VideoListOptions,
   type VideoPatch,
@@ -54,6 +57,48 @@ function toVideo(row: VideosTable): Video {
 
 function toJob(row: JobsTable): Job {
   return { ...row, progress: Number(row.progress), attempts: Number(row.attempts) };
+}
+
+function toRendition(row: RenditionsTable): Rendition {
+  return {
+    ...row,
+    width: Number(row.width),
+    height: Number(row.height),
+    videoBitrateKbps: Number(row.videoBitrateKbps),
+    audioBitrateKbps: row.audioBitrateKbps === null ? null : Number(row.audioBitrateKbps),
+    segmentCount: Number(row.segmentCount),
+    sizeBytes: row.sizeBytes === null ? null : Number(row.sizeBytes),
+  };
+}
+
+class KyselyRenditionRepository implements RenditionRepository {
+  constructor(private readonly db: Kysely<DatabaseSchema>) {}
+
+  async listForVideo(videoId: string): Promise<Rendition[]> {
+    const rows = await this.db
+      .selectFrom('renditions')
+      .selectAll()
+      .where('videoId', '=', videoId)
+      .orderBy('height', 'asc')
+      .orderBy('name', 'asc')
+      .execute();
+    return rows.map(toRendition);
+  }
+
+  async replaceForVideo(videoId: string, renditions: NewRendition[]): Promise<Rendition[]> {
+    const now = nowIso();
+    const rows: RenditionsTable[] = renditions.map((r) => ({
+      ...r,
+      id: randomUUID(),
+      videoId,
+      createdAt: now,
+    }));
+    await this.db.transaction().execute(async (trx) => {
+      await trx.deleteFrom('renditions').where('videoId', '=', videoId).execute();
+      if (rows.length > 0) await trx.insertInto('renditions').values(rows).execute();
+    });
+    return this.listForVideo(videoId);
+  }
 }
 
 class KyselyVideoRepository implements VideoRepository {
@@ -204,6 +249,7 @@ class KyselyJobRepository implements JobRepository {
 export class KyselyDatabase implements Database {
   readonly videos: VideoRepository;
   readonly jobs: JobRepository;
+  readonly renditions: RenditionRepository;
 
   constructor(
     readonly backend: DbBackend,
@@ -211,6 +257,7 @@ export class KyselyDatabase implements Database {
   ) {
     this.videos = new KyselyVideoRepository(db);
     this.jobs = new KyselyJobRepository(db);
+    this.renditions = new KyselyRenditionRepository(db);
   }
 
   async migrate(): Promise<void> {

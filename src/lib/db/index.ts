@@ -5,11 +5,13 @@ import type { Database } from './types.js';
 
 export { KyselyDatabase } from './kysely-database.js';
 export {
+  CODECS,
   DbError,
   RecordNotFoundError,
   JOB_STATUSES,
   JOB_TYPES,
   VIDEO_STATUSES,
+  type Codec,
   type Database,
   type DbBackend,
   type Job,
@@ -20,8 +22,11 @@ export {
   type JobType,
   type ListOptions,
   type NewJob,
+  type NewRendition,
   type NewVideo,
   type Page,
+  type Rendition,
+  type RenditionRepository,
   type Video,
   type VideoListOptions,
   type VideoPatch,
