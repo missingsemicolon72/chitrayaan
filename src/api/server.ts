@@ -1,28 +1,7 @@
-import { ConfigError, loadConfig } from '../config/index.js';
+import { bootstrapConfig } from '../config/index.js';
 import { buildApp } from './app.js';
 
-/** Load `.env` from the working directory if present; existing process.env values win. */
-function loadDotEnv(): void {
-  try {
-    process.loadEnvFile('.env');
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-  }
-}
-
-loadDotEnv();
-
-let config;
-try {
-  config = loadConfig();
-} catch (err) {
-  if (err instanceof ConfigError) {
-    console.error(err.message);
-    process.exit(1);
-  }
-  throw err;
-}
-
+const config = bootstrapConfig();
 const app = await buildApp(config);
 
 const shutdown = (signal: NodeJS.Signals) => {

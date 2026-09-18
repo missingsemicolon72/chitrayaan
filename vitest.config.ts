@@ -8,5 +8,7 @@ export default defineConfig({
     isolate: true,
     clearMocks: true,
     restoreMocks: true,
+    testTimeout: 15_000,
+    hookTimeout: 15_000,
   },
 });

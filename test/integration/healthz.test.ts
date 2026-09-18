@@ -3,6 +3,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../../src/api/app.js';
 import type { Database } from '../../src/lib/db/index.js';
 import { createTestApp, type TestApp } from '../helpers/app.js';
+import { redisAvailable } from '../helpers/redis.js';
+
+const REDIS = await redisAvailable();
 
 describe('GET /healthz', () => {
   let t: TestApp;
@@ -15,20 +18,21 @@ describe('GET /healthz', () => {
     await t.close();
   });
 
-  it('responds 200 with a liveness payload and no auth header', async () => {
+  it('responds with a liveness payload and no auth header (503 only if a dependency is down)', async () => {
     const res = await t.app.inject({ method: 'GET', url: '/healthz' });
 
-    expect(res.statusCode).toBe(200);
+    // Redis is optional in this environment; the db check must always pass.
+    expect(res.statusCode).toBe(REDIS ? 200 : 503);
     expect(res.headers['content-type']).toMatch(/application\/json/);
 
     const body = res.json<{
       status: string;
-      checks: { db: string };
+      checks: { db: string; redis: string };
       uptimeSeconds: number;
       timestamp: string;
     }>();
-    expect(body.status).toBe('ok');
-    expect(body.checks).toEqual({ db: 'ok' });
+    expect(body.status).toBe(REDIS ? 'ok' : 'degraded');
+    expect(body.checks).toEqual({ db: 'ok', redis: REDIS ? 'ok' : 'error' });
     expect(body.uptimeSeconds).toBeGreaterThanOrEqual(0);
     expect(Number.isInteger(body.uptimeSeconds)).toBe(true);
     expect(() => new Date(body.timestamp).toISOString()).not.toThrow();
@@ -51,7 +55,11 @@ describe('GET /healthz', () => {
       ping: () => Promise.reject(new Error('database is down')),
       close: () => Promise.resolve(),
     };
-    const degraded = await buildApp(t.app.config, { db: broken, storage: t.app.storage });
+    const degraded = await buildApp(t.app.config, {
+      db: broken,
+      storage: t.app.storage,
+      queue: t.queue,
+    });
     try {
       const res = await degraded.inject({ method: 'GET', url: '/healthz' });
       expect(res.statusCode).toBe(503);

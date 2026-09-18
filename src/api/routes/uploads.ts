@@ -71,6 +71,18 @@ export async function uploadRoutes(app: FastifyInstance): Promise<void> {
         { videoId: upload.id, jobId: job.id, sourceKey, sizeBytes: video.sizeBytes },
         'upload complete, transcode job recorded',
       );
+
+      // Best effort: if Redis is down the job stays `queued` in the database and startup
+      // reconciliation hands it over later. The upload itself has already succeeded.
+      try {
+        const queueJobId = await app.queue.enqueue(job);
+        await db.jobs.update(job.id, { queueJobId });
+      } catch (err) {
+        app.log.error(
+          { err, jobId: job.id },
+          'could not enqueue transcode job; left for reconciliation',
+        );
+      }
       return {};
     },
 

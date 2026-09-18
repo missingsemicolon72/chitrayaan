@@ -1,13 +1,18 @@
 import type { FastifyInstance } from 'fastify';
 
+type CheckResult = 'ok' | 'error';
+
 const healthResponseSchema = {
   type: 'object',
   properties: {
     status: { type: 'string', enum: ['ok', 'degraded'] },
     checks: {
       type: 'object',
-      properties: { db: { type: 'string', enum: ['ok', 'error'] } },
-      required: ['db'],
+      properties: {
+        db: { type: 'string', enum: ['ok', 'error'] },
+        redis: { type: 'string', enum: ['ok', 'error'] },
+      },
+      required: ['db', 'redis'],
     },
     uptimeSeconds: { type: 'integer' },
     timestamp: { type: 'string' },
@@ -16,8 +21,9 @@ const healthResponseSchema = {
 } as const;
 
 /**
- * GET /healthz - liveness + a database round-trip. Intentionally unauthenticated (CLAUDE.md:
- * "All endpoints except /healthz require an X-API-Key header"). Returns 503 when the DB is down.
+ * GET /healthz - liveness plus a database and Redis round-trip. Intentionally unauthenticated
+ * (CLAUDE.md: "All endpoints except /healthz require an X-API-Key header"). Returns 503 with
+ * status `degraded` when any dependency check fails.
  */
 export async function healthRoutes(app: FastifyInstance): Promise<void> {
   app.get(
@@ -27,17 +33,25 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
       schema: { response: { 200: healthResponseSchema, 503: healthResponseSchema } },
     },
     async (_request, reply) => {
-      let db: 'ok' | 'error' = 'ok';
-      try {
-        await app.db.ping();
-      } catch (err) {
-        app.log.error(err, 'healthz: database ping failed');
-        db = 'error';
-      }
+      const check = async (name: string, probe: () => Promise<void>): Promise<CheckResult> => {
+        try {
+          await probe();
+          return 'ok';
+        } catch (err) {
+          app.log.error({ err, check: name }, 'healthz: dependency check failed');
+          return 'error';
+        }
+      };
 
-      return reply.code(db === 'ok' ? 200 : 503).send({
-        status: db === 'ok' ? 'ok' : 'degraded',
-        checks: { db },
+      const [db, redis] = await Promise.all([
+        check('db', () => app.db.ping()),
+        check('redis', () => app.queue.ping()),
+      ]);
+      const healthy = db === 'ok' && redis === 'ok';
+
+      return reply.code(healthy ? 200 : 503).send({
+        status: healthy ? 'ok' : 'degraded',
+        checks: { db, redis },
         uptimeSeconds: Math.floor(process.uptime()),
         timestamp: new Date().toISOString(),
       });

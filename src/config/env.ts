@@ -81,6 +81,8 @@ export const envSchema = z
 
     // Job queue (decision #5: BullMQ + Redis)
     REDIS_URL: z.url().default('redis://127.0.0.1:6379'),
+    /** Transcode jobs one worker process runs at once. FFmpeg is CPU-bound, so keep this low. */
+    WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(1),
 
     // Packaging + codec ladder (decisions #9, #10, #11)
     PACKAGE_FORMATS: commaList(PACKAGE_FORMATS, 'hls,dash'),

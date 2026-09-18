@@ -7,7 +7,8 @@ design decisions, architecture, and milestone plan — that file is the source o
 
 - Node.js 22+ (see `.nvmrc`)
 - FFmpeg on `PATH` (needed from Milestone 5 onward)
-- Redis (needed from Milestone 4 onward)
+- Redis reachable at `REDIS_URL` (a Redis inside WSL works from Windows via
+  `redis://127.0.0.1:6379` as long as the WSL distro is running)
 
 ## Setup
 
@@ -21,8 +22,10 @@ cp .env.example .env   # then set API_KEY to a long random string
 | Command                | What it does                                             |
 | ---------------------- | -------------------------------------------------------- |
 | `npm run dev`          | Start the API with hot reload (`tsx watch`)              |
+| `npm run dev:worker`   | Start the transcode worker with hot reload               |
 | `npm run build`        | Compile `src/` to `dist/`                                |
 | `npm start`            | Run the compiled API                                     |
+| `npm run start:worker` | Run the compiled worker                                  |
 | `npm run typecheck`    | `tsc --noEmit`                                           |
 | `npm run lint`         | ESLint (type-aware rules on)                             |
 | `npm run format:check` | Prettier check (`npm run format` to write)               |
@@ -60,16 +63,29 @@ curl -si -X PATCH http://127.0.0.1:3000/api/uploads/<id> \
   --data-binary @clip.mp4
 #    -> 204 when complete; the video is now `uploaded` with a queued transcode job
 
-# 3. Inspect
+# 3. Inspect the video (includes its jobs) or a job directly
 curl -s -H "X-API-Key: $API_KEY" http://127.0.0.1:3000/api/videos/<id>
+curl -s -H "X-API-Key: $API_KEY" http://127.0.0.1:3000/api/jobs/<jobId>
+curl -s -H "X-API-Key: $API_KEY" "http://127.0.0.1:3000/api/jobs?status=queued"
 ```
+
+## Processing
+
+A finished upload records a `transcode` job and hands it to BullMQ. Run at least one worker
+(`npm run dev:worker`) to consume the queue; it shares the API's database and storage. Job rows
+in the database are the source of truth for status and progress; `GET /api/jobs/:id` also shows
+BullMQ's live view under `queue` when Redis is reachable.
+
+If Redis is down when an upload finishes, the upload still succeeds and the job stays `queued`
+in the database; the API enqueues such jobs again the next time it starts. `/healthz` reports
+`redis: error` (HTTP 503) in the meantime.
 
 ## Layout
 
 ```
 src/api        Fastify app, routes, auth
-src/worker     BullMQ worker (transcode jobs)
-src/lib        storage, db, transcode, packaging, rtmp, features
+src/worker     worker entrypoint, job runner (status bookkeeping), processors
+src/lib        storage, db, queue, transcode, packaging, rtmp, features
 src/config     env schema + loader
 test/unit      pure unit tests
 test/contracts reusable behavioural suites every storage / db driver must pass

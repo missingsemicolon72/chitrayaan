@@ -15,7 +15,9 @@ describe('X-API-Key auth', () => {
 
   it('leaves /healthz public', async () => {
     const res = await t.app.inject({ method: 'GET', url: '/healthz' });
-    expect(res.statusCode).toBe(200);
+    // 200, or 503 when a dependency (Redis) is absent in this environment; never 401.
+    expect([200, 503]).toContain(res.statusCode);
+    expect(res.json()).toHaveProperty('checks');
   });
 
   it('rejects a missing key with 401 and a JSON body', async () => {

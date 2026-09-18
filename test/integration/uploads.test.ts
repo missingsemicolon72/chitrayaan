@@ -4,7 +4,9 @@ import { Upload as TusClientUpload } from 'tus-js-client';
 
 import { TUS_CONTENT_TYPE } from '../../src/api/routes/uploads.js';
 import { createTestApp, type TestApp } from '../helpers/app.js';
+import { redisAvailable } from '../helpers/redis.js';
 
+const REDIS = await redisAvailable();
 const TUS_VERSION = '1.0.0';
 const MiB = 1024 * 1024;
 
@@ -128,7 +130,15 @@ describe('tus resumable uploads', () => {
 
     const jobs = await t.app.db.jobs.list({ videoId: id });
     expect(jobs.total).toBe(1);
-    expect(jobs.items[0]).toMatchObject({ type: 'transcode', status: 'queued', videoId: id });
+    const job = jobs.items[0]!;
+    expect(job).toMatchObject({ type: 'transcode', status: 'queued', videoId: id });
+    if (REDIS) {
+      // The finished upload handed its job to BullMQ under the job's own id.
+      expect(job.queueJobId).toBe(job.id);
+      expect((await t.queue.getState(job.id))?.state).toBe('waiting');
+    } else {
+      expect(job.queueJobId).toBeNull();
+    }
 
     // The bytes are readable through the storage abstraction and are intact.
     const stored = await readAll(await t.app.storage.get(`uploads/${id}`));
