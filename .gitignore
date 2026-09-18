@@ -1,0 +1,22 @@
+# Dependencies / build output
+node_modules/
+dist/
+coverage/
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Runtime data (local-mode storage + SQLite live here by default)
+data/
+
+# Synthetic test clips are generated at test-run time, never committed
+test/fixtures/generated/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.idea/

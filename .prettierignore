@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+data/
+test/fixtures/generated/
+test/samples/
+package-lock.json
+CLAUDE.md
+.fable-checkpoint.md
