@@ -1,0 +1,16 @@
+# Keep LF in the working copy on every platform so Prettier/EditorConfig (endOfLine=lf) agree
+# with git, regardless of a machine's core.autocrlf setting.
+* text=auto eol=lf
+
+# Real media samples and generated fixtures are never committed, but if a binary ever is,
+# make sure git does not try to normalise it.
+*.mp4 binary
+*.mkv binary
+*.mov binary
+*.webm binary
+*.m4s binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.sqlite binary

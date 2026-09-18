@@ -35,6 +35,10 @@ All settings come from environment variables and are validated at startup by `sr
 `.env.example` documents every variable with its default. The process exits with a list of every
 problem if the config is invalid.
 
+Local mode (`STORAGE_BACKEND=local`, `DB_BACKEND=sqlite`) needs no external services: the storage
+directory and the SQLite file's parent directory are created on first start, and schema migrations
+run automatically. `SQLITE_PATH=:memory:` gives a throwaway database for tests.
+
 ## Layout
 
 ```
@@ -43,7 +47,8 @@ src/worker     BullMQ worker (transcode jobs)
 src/lib        storage, db, transcode, packaging, rtmp, features
 src/config     env schema + loader
 test/unit      pure unit tests
-test/integration  app-level tests (Fastify inject, no network)
+test/contracts reusable behavioural suites every storage / db driver must pass
+test/integration  driver + app-level tests (Fastify inject, no network)
 test/fixtures  generated synthetic clips (not committed)
 test/samples   your own real clips (gitignored)
 player         static hls.js + dash.js test page
