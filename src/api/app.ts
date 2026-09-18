@@ -3,7 +3,10 @@ import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastif
 import type { AppConfig } from '../config/index.js';
 import { createDatabase, type Database } from '../lib/db/index.js';
 import { createStorage, type ObjectStorage } from '../lib/storage/index.js';
+import { registerApiKeyAuth } from './plugins/auth.js';
 import { healthRoutes } from './routes/health.js';
+import { uploadRoutes } from './routes/uploads.js';
+import { videoRoutes } from './routes/videos.js';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -69,7 +72,12 @@ export async function buildApp(
 
   app.log.info({ db: db.backend, storage: storage.backend }, 'storage and database ready');
 
+  // Auth is registered before any routes so it applies to every plugin below.
+  registerApiKeyAuth(app, config.API_KEY);
+
   await app.register(healthRoutes);
+  await app.register(videoRoutes);
+  await app.register(uploadRoutes);
 
   return app;
 }

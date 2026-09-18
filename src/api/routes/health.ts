@@ -22,7 +22,10 @@ const healthResponseSchema = {
 export async function healthRoutes(app: FastifyInstance): Promise<void> {
   app.get(
     '/healthz',
-    { schema: { response: { 200: healthResponseSchema, 503: healthResponseSchema } } },
+    {
+      config: { public: true },
+      schema: { response: { 200: healthResponseSchema, 503: healthResponseSchema } },
+    },
     async (_request, reply) => {
       let db: 'ok' | 'error' = 'ok';
       try {

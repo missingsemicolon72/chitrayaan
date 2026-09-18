@@ -39,6 +39,31 @@ Local mode (`STORAGE_BACKEND=local`, `DB_BACKEND=sqlite`) needs no external serv
 directory and the SQLite file's parent directory are created on first start, and schema migrations
 run automatically. `SQLITE_PATH=:memory:` gives a throwaway database for tests.
 
+## Uploading a video
+
+Every route except `/healthz` needs the `X-API-Key` header. Uploads use the
+[tus](https://tus.io) resumable protocol at `/api/uploads`; any tus client works
+(`tus-js-client`, the `tus` CLI, Uppy). The upload id returned in `Location` is also the video id.
+
+```sh
+# 1. Create the upload (metadata values are base64)
+curl -si -X POST http://127.0.0.1:3000/api/uploads \
+  -H "X-API-Key: $API_KEY" -H "Tus-Resumable: 1.0.0" \
+  -H "Upload-Length: $(stat -c %s clip.mp4)" \
+  -H "Upload-Metadata: filename $(echo -n clip.mp4 | base64)"
+#    -> 201, Location: /api/uploads/<id>
+
+# 2. Send the bytes (repeat with the offset from a HEAD request to resume)
+curl -si -X PATCH http://127.0.0.1:3000/api/uploads/<id> \
+  -H "X-API-Key: $API_KEY" -H "Tus-Resumable: 1.0.0" \
+  -H "Upload-Offset: 0" -H "Content-Type: application/offset+octet-stream" \
+  --data-binary @clip.mp4
+#    -> 204 when complete; the video is now `uploaded` with a queued transcode job
+
+# 3. Inspect
+curl -s -H "X-API-Key: $API_KEY" http://127.0.0.1:3000/api/videos/<id>
+```
+
 ## Layout
 
 ```
