@@ -216,6 +216,74 @@ export function describeDatabaseContract(
       });
     });
 
+    describe('subtitles', () => {
+      const track = (videoId: string, language: string, over = {}) => ({
+        videoId,
+        language,
+        label: language.toUpperCase(),
+        storageKey: `videos/${videoId}/subtitles/${language}.vtt`,
+        cueCount: 3,
+        sizeBytes: 512,
+        ...over,
+      });
+
+      it('inserts, reads back, and replaces by (video, language)', async () => {
+        const video = await db.videos.create({});
+        expect(await db.subtitles.listForVideo(video.id)).toEqual([]);
+        expect(await db.subtitles.get(video.id, 'en')).toBeNull();
+
+        const created = await db.subtitles.upsert(track(video.id, 'en'));
+        expect(created).toMatchObject({
+          videoId: video.id,
+          language: 'en',
+          label: 'EN',
+          isDefault: false,
+          cueCount: 3,
+          sizeBytes: 512,
+        });
+        expect(created.id).toMatch(UUID);
+        expect(created.createdAt).toMatch(ISO_UTC);
+
+        const replaced = await db.subtitles.upsert(
+          track(video.id, 'en', { label: 'English', cueCount: 9 }),
+        );
+        expect(replaced.id).toBe(created.id);
+        expect(replaced).toMatchObject({ label: 'English', cueCount: 9 });
+        expect(await db.subtitles.listForVideo(video.id)).toHaveLength(1);
+      });
+
+      it('keeps at most one default track per video and lists by language', async () => {
+        const video = await db.videos.create({});
+        const other = await db.videos.create({});
+        await db.subtitles.upsert(track(video.id, 'fr', { isDefault: true }));
+        await db.subtitles.upsert(track(video.id, 'en', { isDefault: true }));
+        await db.subtitles.upsert(track(other.id, 'de', { isDefault: true }));
+
+        const tracks = await db.subtitles.listForVideo(video.id);
+        expect(tracks.map((t) => t.language)).toEqual(['en', 'fr']);
+        expect(tracks.filter((t) => t.isDefault).map((t) => t.language)).toEqual(['en']);
+        // Another video's default is unaffected.
+        expect((await db.subtitles.get(other.id, 'de'))?.isDefault).toBe(true);
+      });
+
+      it('deletes a track and cascades with its video', async () => {
+        const video = await db.videos.create({});
+        await db.subtitles.upsert(track(video.id, 'en'));
+        expect(await db.subtitles.delete(video.id, 'en')).toBe(true);
+        expect(await db.subtitles.delete(video.id, 'en')).toBe(false);
+
+        await db.subtitles.upsert(track(video.id, 'es'));
+        await db.videos.delete(video.id);
+        expect(await db.subtitles.listForVideo(video.id)).toEqual([]);
+      });
+
+      it('refuses a track for an unknown video', async () => {
+        await expect(db.subtitles.upsert(track('ghost', 'en'))).rejects.toBeInstanceOf(
+          RecordNotFoundError,
+        );
+      });
+    });
+
     describe('jobs', () => {
       it('creates with defaults, tied to an existing video', async () => {
         const video = await db.videos.create({});

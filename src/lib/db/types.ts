@@ -29,6 +29,9 @@ export interface Video {
   /** Storage keys of the packaged manifests; set when a transcode completes. */
   hlsManifestKey: string | null;
   dashManifestKey: string | null;
+  /** Storage key of the WebVTT scrubbing-thumbnail track (FEATURE_THUMBNAILS). */
+  thumbnailTrackKey: string | null;
+  thumbnailSpriteCount: number | null;
   /** ISO 8601 UTC timestamps. */
   createdAt: string;
   updatedAt: string;
@@ -58,6 +61,8 @@ export type VideoPatch = Partial<
     | 'error'
     | 'hlsManifestKey'
     | 'dashManifestKey'
+    | 'thumbnailTrackKey'
+    | 'thumbnailSpriteCount'
   >
 >;
 
@@ -118,6 +123,33 @@ export interface Rendition {
 
 export type NewRendition = Omit<Rendition, 'id' | 'createdAt'>;
 
+/** A manually uploaded WebVTT subtitle track (decision #13; no auto-captioning). */
+export interface Subtitle {
+  id: string;
+  videoId: string;
+  /** BCP-47 tag, lower-cased primary subtag, e.g. `en` or `pt-BR`. */
+  language: string;
+  /** Human-readable name shown in a player's track menu. */
+  label: string;
+  storageKey: string;
+  /** At most one default track per video. */
+  isDefault: boolean;
+  cueCount: number;
+  sizeBytes: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface NewSubtitle {
+  videoId: string;
+  language: string;
+  label: string;
+  storageKey: string;
+  isDefault?: boolean;
+  cueCount: number;
+  sizeBytes: number;
+}
+
 export interface Page<T> {
   items: T[];
   total: number;
@@ -167,12 +199,25 @@ export interface RenditionRepository {
   replaceForVideo(videoId: string, renditions: NewRendition[]): Promise<Rendition[]>;
 }
 
+/** Subtitle tracks, keyed by (video, language). Ordered by language. */
+export interface SubtitleRepository {
+  listForVideo(videoId: string): Promise<Subtitle[]>;
+  get(videoId: string, language: string): Promise<Subtitle | null>;
+  /**
+   * Insert or replace the track for this (video, language). Setting `isDefault` clears the
+   * flag on the video's other tracks. Rejects with `RecordNotFoundError` for an unknown video.
+   */
+  upsert(input: NewSubtitle): Promise<Subtitle>;
+  delete(videoId: string, language: string): Promise<boolean>;
+}
+
 /** Metadata database abstraction (decision #7: SQLite for local mode, Postgres for cloud mode). */
 export interface Database {
   readonly backend: DbBackend;
   readonly videos: VideoRepository;
   readonly jobs: JobRepository;
   readonly renditions: RenditionRepository;
+  readonly subtitles: SubtitleRepository;
   /** Apply any pending schema migrations. Safe to call on every startup. */
   migrate(): Promise<void>;
   /** Cheap round-trip used by `/healthz`. Rejects if the database is unreachable. */

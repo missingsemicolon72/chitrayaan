@@ -3,6 +3,13 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { Codec, NewRendition } from '../../lib/db/index.js';
+import { SUBTITLES_PREFIX } from '../../lib/features/subtitles/index.js';
+import {
+  generateThumbnails,
+  THUMBNAIL_TRACK_FILE,
+  THUMBNAILS_PREFIX,
+} from '../../lib/features/thumbnails/index.js';
+import type { WatermarkConfig } from '../../lib/features/watermark/index.js';
 import type { Logger } from '../../lib/logger.js';
 import {
   buildLadderArgs,
@@ -38,12 +45,17 @@ export interface TranscodeProcessorOptions {
   codecs?: readonly Codec[];
   /** Which master manifests to publish. Defaults to both. */
   formats?: readonly PackageFormat[];
+  /** Burn an overlay into every rung (FEATURE_WATERMARK). Off when omitted. */
+  watermark?: WatermarkConfig;
+  /** Produce scrubbing-preview sprites and a WebVTT track (FEATURE_THUMBNAILS). */
+  thumbnails?: boolean;
 }
 
-/** Progress budget: probe 0-2, encoding 2-90, upload 90-99, bookkeeping 100. */
+/** Progress budget: probe 0-2, encoding 2-85, upload 85-93, thumbnails 93-99, bookkeeping 100. */
 const ENCODE_START = 2;
-const ENCODE_END = 90;
-const UPLOAD_END = 99;
+const ENCODE_END = 85;
+const UPLOAD_END = 93;
+const THUMBNAIL_END = 99;
 
 /**
  * Local storage exposes the source's real path, so the (possibly multi-GB) file is used in
@@ -66,9 +78,26 @@ async function materializeSource(
 }
 
 /**
+ * Remove a previous run's packaged output while keeping uploaded subtitle tracks, which are
+ * independent of transcoding and would otherwise be lost on a re-transcode.
+ */
+async function clearPackagedOutput(storage: ObjectStorage, prefix: string): Promise<number> {
+  const keep = `${prefix}/${SUBTITLES_PREFIX}/`;
+  const objects = await storage.list(`${prefix}/`);
+  let removed = 0;
+  for (const object of objects) {
+    if (object.key.startsWith(keep)) continue;
+    await storage.delete(object.key);
+    removed += 1;
+  }
+  return removed;
+}
+
+/**
  * The real transcode: probe the source, encode the whole ladder in one FFmpeg pass packaged as
- * CMAF (shared fMP4 segments + DASH MPD + HLS playlists), upload everything under
- * `videos/<id>/`, and record the renditions and manifest keys.
+ * CMAF (shared fMP4 segments + DASH MPD + HLS playlists), optionally burn in a watermark and
+ * generate scrubbing sprites, upload everything under `videos/<id>/`, and record the
+ * renditions and manifest keys.
  * Input problems (missing source, unreadable file, no video stream) are `UnrecoverableError`s
  * so the queue never retries them; encoder failures are ordinary errors.
  */
@@ -120,13 +149,25 @@ export function createTranscodeProcessor(options: TranscodeProcessorOptions): Tr
       const plans = codecs.flatMap((codec) => planLadder(LADDERS[codec], info));
       const outDir = path.join(workDir, 'out');
       await mkdir(outDir);
-      const args = buildLadderArgs(sourcePath, plans, { preset: options.preset, av1Preset });
+      const args = buildLadderArgs(sourcePath, plans, {
+        preset: options.preset,
+        av1Preset,
+        ...(options.watermark ? { watermark: options.watermark } : {}),
+      });
       log.info(
         {
           rungs: plans.map((p) => `${p.profile.name}@${p.width}x${p.height}`),
           audio: plans[0]?.includeAudio ?? false,
           preset: options.preset,
           ...(codecs.includes('av1') ? { av1Preset } : {}),
+          ...(options.watermark
+            ? {
+                watermark: {
+                  position: options.watermark.position,
+                  opacity: options.watermark.opacity,
+                },
+              }
+            : {}),
         },
         'encoding ladder',
       );
@@ -163,9 +204,9 @@ export function createTranscodeProcessor(options: TranscodeProcessorOptions): Tr
         }
       }
 
-      // A re-transcode must not leave stale files from a previous run behind.
+      // A re-transcode must not leave stale files behind, but uploaded subtitles survive.
       const prefix = `videos/${video.id}`;
-      await storage.deletePrefix(`${prefix}/`);
+      await clearPackagedOutput(storage, prefix);
 
       const uploads = selectUploads(files, formats);
       const sizes = new Map<string, number>();
@@ -195,9 +236,42 @@ export function createTranscodeProcessor(options: TranscodeProcessorOptions): Tr
         };
       });
       await db.renditions.replaceForVideo(video.id, renditions);
+      await reportProgress(UPLOAD_END);
+
+      // Scrubbing previews (FEATURE_THUMBNAILS). A failure here must not lose the transcode,
+      // so it is logged and the video still goes ready without a thumbnail track.
+      let thumbnailTrackKey: string | null = null;
+      let thumbnailSpriteCount: number | null = null;
+      if (options.thumbnails) {
+        try {
+          const thumbs = await generateThumbnails({
+            ffmpegPath: options.ffmpegPath,
+            ffprobePath: options.ffprobePath,
+            sourcePath,
+            workDir,
+            durationSeconds: info.durationSeconds,
+            log,
+          });
+          for (const file of thumbs.files) {
+            await storage.putFile(
+              `${prefix}/${THUMBNAILS_PREFIX}/${file}`,
+              path.join(thumbs.outputDir, file),
+              { contentType: contentTypeForKey(file) },
+            );
+          }
+          thumbnailTrackKey = `${prefix}/${THUMBNAILS_PREFIX}/${THUMBNAIL_TRACK_FILE}`;
+          thumbnailSpriteCount = thumbs.spriteCount;
+        } catch (err) {
+          log.error({ err }, 'thumbnail generation failed; continuing without a preview track');
+        }
+        await reportProgress(THUMBNAIL_END);
+      }
+
       await db.videos.update(video.id, {
         hlsManifestKey: uploads.hlsMaster ? `${prefix}/${uploads.hlsMaster}` : null,
         dashManifestKey: uploads.dashManifest ? `${prefix}/${uploads.dashManifest}` : null,
+        thumbnailTrackKey,
+        thumbnailSpriteCount,
       });
       await reportProgress(100);
       log.info(
@@ -208,6 +282,7 @@ export function createTranscodeProcessor(options: TranscodeProcessorOptions): Tr
           files: uploads.files.length,
           hls: uploads.hlsMaster !== null,
           dash: uploads.dashManifest !== null,
+          thumbnails: thumbnailSpriteCount,
         },
         'ladder stored',
       );

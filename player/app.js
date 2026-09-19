@@ -28,6 +28,7 @@
     dashTracks: null,
     pollTimer: null,
     statsTimer: null,
+    thumbs: { cues: [], baseUrl: '', sprites: new Map() },
   };
 
   const apiBase = () => ($('api-base').value.trim() || window.location.origin).replace(/\/+$/, '');
@@ -128,12 +129,129 @@
     }
   }
 
+  // ---------- optional features: scrubbing previews and subtitle tracks ----------
+
+  function vttSeconds(value) {
+    const m = /^(?:(\d+):)?(\d{2}):(\d{2})[.,](\d{1,3})$/.exec(value.trim());
+    if (!m) return 0;
+    return (
+      Number(m[1] || 0) * 3600 +
+      Number(m[2]) * 60 +
+      Number(m[3]) +
+      Number(m[4].padEnd(3, '0')) / 1000
+    );
+  }
+
+  /** Cues look like `sprite_000.jpg#xywh=160,0,160,90`. */
+  function parseThumbnailTrack(text) {
+    const cues = [];
+    const lines = text.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i += 1) {
+      if (!lines[i].includes('-->')) continue;
+      const [startRaw, rest] = lines[i].split('-->');
+      const payload = (lines[i + 1] || '').trim();
+      const m = /^(.*?)#xywh=(\d+),(\d+),(\d+),(\d+)$/.exec(payload);
+      if (!m) continue;
+      cues.push({
+        start: vttSeconds(startRaw),
+        end: vttSeconds((rest || '').trim().split(/\s+/)[0] || ''),
+        file: m[1],
+        x: Number(m[2]),
+        y: Number(m[3]),
+        w: Number(m[4]),
+        h: Number(m[5]),
+      });
+    }
+    return cues;
+  }
+
+  /** Sprites need the API key, so they are fetched and turned into object URLs once each. */
+  async function spriteUrl(file) {
+    const cached = state.thumbs.sprites.get(file);
+    if (cached) return cached;
+    const res = await fetch(state.thumbs.baseUrl + file, { headers: { 'X-API-Key': apiKey() } });
+    if (!res.ok) throw new Error(`${res.status} for ${file}`);
+    const url = URL.createObjectURL(await res.blob());
+    state.thumbs.sprites.set(file, url);
+    return url;
+  }
+
+  async function showPreviewAt(seconds) {
+    $('scrub-time').textContent = seconds.toFixed(1);
+    const cue =
+      state.thumbs.cues.find((c) => seconds >= c.start && seconds < c.end) ??
+      state.thumbs.cues[state.thumbs.cues.length - 1];
+    if (!cue) return;
+    const preview = $('thumb-preview');
+    preview.style.width = `${cue.w}px`;
+    preview.style.height = `${cue.h}px`;
+    try {
+      const url = await spriteUrl(cue.file);
+      preview.style.backgroundImage = `url("${url}")`;
+      preview.style.backgroundPosition = `-${cue.x}px -${cue.y}px`;
+    } catch (err) {
+      $('thumb-info').textContent = `sprite failed: ${err.message}`;
+    }
+  }
+
+  async function loadExtras(v) {
+    $('extras').hidden = false;
+    for (const url of state.thumbs.sprites.values()) URL.revokeObjectURL(url);
+    state.thumbs = { cues: [], baseUrl: '', sprites: new Map() };
+
+    const list = $('subtitle-list');
+    list.innerHTML = '';
+    if (!v.subtitles || v.subtitles.length === 0) {
+      list.innerHTML = '<li class="muted">none (FEATURE_SUBTITLES off, or nothing uploaded)</li>';
+    } else {
+      for (const track of v.subtitles) {
+        const li = document.createElement('li');
+        li.textContent = `${track.language} - ${track.label}${track.isDefault ? ' (default)' : ''} - ${track.cueCount} cues`;
+        list.append(li);
+      }
+    }
+
+    const scrub = $('scrub');
+    scrub.max = String(v.durationSeconds || 100);
+    scrub.value = '0';
+    if (!v.thumbnails) {
+      $('thumb-info').textContent = '(FEATURE_THUMBNAILS off, or none generated)';
+      $('thumb-preview').style.backgroundImage = 'none';
+      return;
+    }
+    try {
+      const res = await fetch(absolute(v.thumbnails.trackUrl), {
+        headers: { 'X-API-Key': apiKey() },
+      });
+      const text = await res.text();
+      state.thumbs.cues = parseThumbnailTrack(text);
+      state.thumbs.baseUrl = absolute(v.thumbnails.trackUrl).replace(/\/[^/]*$/, '/');
+      $('thumb-info').textContent =
+        `${state.thumbs.cues.length} previews across ${v.thumbnails.spriteCount} sprite sheet(s)`;
+      await showPreviewAt(0);
+    } catch (err) {
+      $('thumb-info').textContent = `thumbnail track failed: ${err.message}`;
+    }
+  }
+
+  $('scrub').addEventListener('input', (event) => {
+    showPreviewAt(Number(event.target.value));
+  });
+  $('scrub-seek').addEventListener('click', () => {
+    const at = Number($('scrub').value);
+    for (const which of ['hls', 'dash']) {
+      const video = $(`${which}-video`);
+      if (video.readyState > 0) video.currentTime = at;
+    }
+  });
+
   async function loadVideo(id) {
     clearTimeout(state.pollTimer);
     try {
       const v = await api(`/api/videos/${encodeURIComponent(id)}`);
       state.video = v;
       renderDetails(v);
+      await loadExtras(v);
       if (v.status === 'ready') {
         if (v.manifests.hls) setupHls(absolute(v.manifests.hls));
         else log('hls', 'no HLS manifest published for this video');
@@ -381,11 +499,14 @@
   }
 
   state.statsTimer = setInterval(() => {
+    const detected = [];
     for (const which of ['hls', 'dash']) {
       const video = $(`${which}-video`);
       $(`${which}-buffer`).textContent = bufferAhead(video).toFixed(1);
       $(`${which}-position`).textContent = video.currentTime.toFixed(1);
+      detected.push(`${which}: ${video.textTracks.length}`);
     }
+    $('subtitle-detected').textContent = `detected by players - ${detected.join(', ')}`;
   }, 500);
 
   // ---------- wiring ----------

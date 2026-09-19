@@ -1,3 +1,4 @@
+import { buildWatermarkChain, type WatermarkConfig } from '../features/watermark/index.js';
 import { GOP_SECONDS, SEGMENT_SECONDS } from '../transcode/profiles.js';
 import type { RenditionPlan } from '../transcode/rendition.js';
 import { DASH_MANIFEST, HLS_MASTER } from './layout.js';
@@ -7,6 +8,8 @@ export interface LadderEncodeOptions {
   preset: string;
   /** SVT-AV1 preset (0-13). Required only when a plan uses the av1 codec; defaults to 8. */
   av1Preset?: number;
+  /** Overlay burned into every rung (FEATURE_WATERMARK). */
+  watermark?: WatermarkConfig;
 }
 
 /** Per-stream encoder flags for one rung. `i` is the output stream index. */
@@ -66,17 +69,25 @@ export function buildLadderArgs(
   const includeAudio = first.includeAudio;
   const gopFrames = Math.max(1, Math.round(GOP_SECONDS * first.frameRate));
 
+  // The watermark is composited once on the decoded source, before the split, so each rung
+  // scales an already-marked frame instead of re-running the overlay.
+  const watermark = options.watermark ? buildWatermarkChain(options.watermark) : null;
+  const videoIn = watermark ? watermark.outputLabel : '[0:v]';
+
   const scaled = (i: number, plan: RenditionPlan, input: string) =>
     `${input}scale=${plan.width}:${plan.height},format=yuv420p[v${i}]`;
-  const graph =
+  const ladderGraph =
     plans.length === 1
-      ? scaled(0, first, '[0:v]')
+      ? scaled(0, first, videoIn)
       : [
-          `[0:v]split=${plans.length}${plans.map((_, i) => `[s${i}]`).join('')}`,
+          `${videoIn}split=${plans.length}${plans.map((_, i) => `[s${i}]`).join('')}`,
           ...plans.map((plan, i) => scaled(i, plan, `[s${i}]`)),
         ].join(';');
+  const graph = watermark ? `${watermark.chain};${ladderGraph}` : ladderGraph;
 
-  const args = ['-y', '-i', sourcePath, '-filter_complex', graph];
+  const args = ['-y', '-i', sourcePath];
+  if (options.watermark) args.push('-i', options.watermark.imagePath);
+  args.push('-filter_complex', graph);
   for (let i = 0; i < plans.length; i += 1) args.push('-map', `[v${i}]`);
   if (includeAudio) args.push('-map', '0:a:0');
 

@@ -20,6 +20,8 @@ interface VideoView extends Video {
   jobs: { id: string; status: string; progress: number }[];
   manifests: { hls: string | null; dash: string | null };
   renditions: (Rendition & { playlistUrl: string | null })[];
+  subtitles: { language: string; label: string; isDefault: boolean; cueCount: number }[];
+  thumbnails: { trackUrl: string; spriteCount: number } | null;
 }
 
 /**
@@ -31,7 +33,7 @@ describe.skipIf(!READY)('upload to packaged ABR ladder, end to end', () => {
   let worker: TranscodeWorkerHandle | undefined;
   let headers: Record<string, string>;
 
-  const startWorker = (codecs: readonly Codec[]) => {
+  const startWorker = (codecs: readonly Codec[], features: { thumbnails?: boolean } = {}) => {
     worker = createTranscodeWorker({
       redisUrl: TEST_REDIS_URL,
       prefix: t.queuePrefix,
@@ -45,6 +47,7 @@ describe.skipIf(!READY)('upload to packaged ABR ladder, end to end', () => {
           preset: 'ultrafast',
           av1Preset: 12,
           codecs,
+          thumbnails: features.thumbnails === true,
           // Deliberately not created up front: WORK_DIR may point at a fresh directory.
           workDir: path.join(t.storageRoot, 'work', 'nested'),
         }),
@@ -53,7 +56,10 @@ describe.skipIf(!READY)('upload to packaged ABR ladder, end to end', () => {
   };
 
   beforeAll(async () => {
-    t = await createTestApp({ listen: true });
+    t = await createTestApp({
+      listen: true,
+      env: { FEATURE_SUBTITLES: 'true', FEATURE_THUMBNAILS: 'true' },
+    });
     headers = { 'X-API-Key': t.apiKey };
   });
 
@@ -204,6 +210,76 @@ describe.skipIf(!READY)('upload to packaged ABR ladder, end to end', () => {
 
     const av1Init = await fetch(`${t.baseUrl}/api/videos/${id}/init-stream3.m4s`, { headers });
     expect(av1Init.status).toBe(200);
+  }, 180_000);
+
+  it('generates scrubbing sprites, accepts a subtitle track, and keeps it across a re-transcode', async () => {
+    startWorker(['h264'], { thumbnails: true });
+    const id = await uploadFixture('480p-5s.mp4');
+    expect((await settledJob(id))?.status).toBe('completed');
+
+    // Thumbnails: the track and its sprite sheet are stored and served.
+    const { body: withThumbs } = await getJson<VideoView>(`/api/videos/${id}`);
+    expect(withThumbs.thumbnails).toMatchObject({
+      trackUrl: `/api/videos/${id}/thumbs/thumbnails.vtt`,
+      spriteCount: 1,
+    });
+    const trackRes = await fetch(`${t.baseUrl}${withThumbs.thumbnails!.trackUrl}`, { headers });
+    expect(trackRes.status).toBe(200);
+    expect(trackRes.headers.get('content-type')).toMatch(/text\/vtt/);
+    const trackBody = await trackRes.text();
+    expect(trackBody.startsWith('WEBVTT')).toBe(true);
+    const sprite = /(sprite_\d+\.jpg)#xywh=/.exec(trackBody)?.[1];
+    expect(sprite).toBe('sprite_000.jpg');
+    const spriteRes = await fetch(`${t.baseUrl}/api/videos/${id}/thumbs/${sprite}`, { headers });
+    expect(spriteRes.status).toBe(200);
+    expect(spriteRes.headers.get('content-type')).toBe('image/jpeg');
+    expect((await spriteRes.arrayBuffer()).byteLength).toBeGreaterThan(1000);
+
+    // Subtitles: uploaded through the API, then present in both served manifests.
+    const vtt = 'WEBVTT\n\n00:00:00.500 --> 00:00:02.000\nHello\n';
+    const put = await fetch(
+      `${t.baseUrl}/api/videos/${id}/subtitles/en?label=English&default=true`,
+      {
+        method: 'PUT',
+        headers: { ...headers, 'content-type': 'text/vtt' },
+        body: vtt,
+      },
+    );
+    expect(put.status).toBe(201);
+
+    const master = parseHlsMaster(
+      await (await fetch(`${t.baseUrl}/api/videos/${id}/master.m3u8`, { headers })).text(),
+    );
+    expect(master.media.filter((m) => m.type === 'SUBTITLES')).toHaveLength(1);
+    const subPlaylist = await fetch(`${t.baseUrl}/api/videos/${id}/subtitles/en.m3u8`, { headers });
+    expect(subPlaylist.status).toBe(200);
+    expect(subPlaylist.body).not.toBeNull();
+    const mpdBody = await (
+      await fetch(`${t.baseUrl}/api/videos/${id}/master.mpd`, { headers })
+    ).text();
+    // The track is a text adaptation set carrying the .vtt directly (mimeType sits on the set).
+    expect(parseMpd(mpdBody).representations.some((r) => r.contentType === 'text')).toBe(true);
+    expect(mpdBody).toContain('mimeType="text/vtt" lang="en"');
+    expect(mpdBody).toContain('<BaseURL>subtitles/en.vtt</BaseURL>');
+
+    // Re-transcoding replaces the packaged output but must not take the subtitles with it.
+    const rerun = await t.app.db.jobs.create({ videoId: id });
+    await t.queue.enqueue(rerun);
+    const done = await waitFor(
+      () => t.app.db.jobs.get(rerun.id),
+      (j) => j?.status === 'completed' || j?.status === 'failed',
+      { timeoutMs: 90_000, intervalMs: 200 },
+    );
+    expect(done?.status).toBe('completed');
+    expect(await t.app.storage.exists(`videos/${id}/subtitles/en.vtt`)).toBe(true);
+    expect(await t.app.db.subtitles.get(id, 'en')).not.toBeNull();
+
+    const after = await getJson<VideoView>(`/api/videos/${id}`);
+    expect(after.body.subtitles.map((s) => s.language)).toEqual(['en']);
+    expect(after.body.thumbnails?.spriteCount).toBe(1);
+    expect(
+      (await fetch(`${t.baseUrl}/api/videos/${id}/thumbs/sprite_000.jpg`, { headers })).status,
+    ).toBe(200);
   }, 180_000);
 
   it('serving refuses traversal, unknown files, and missing keys', async () => {

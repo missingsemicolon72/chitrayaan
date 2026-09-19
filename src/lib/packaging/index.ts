@@ -11,6 +11,12 @@ export {
   type PackageFormat,
 } from './layout.js';
 export {
+  injectDashSubtitles,
+  injectHlsSubtitles,
+  SUBTITLE_GROUP_ID,
+  type SubtitleTrackRef,
+} from './subtitles-inject.js';
+export {
   parseAttributeList,
   parseHlsMaster,
   parseIsoDuration,

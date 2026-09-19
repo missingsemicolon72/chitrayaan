@@ -4,7 +4,13 @@ import { sql, type Kysely } from 'kysely';
 import { Migrator } from 'kysely/migration';
 
 import { migrationProvider } from './migrations.js';
-import type { DatabaseSchema, JobsTable, RenditionsTable, VideosTable } from './schema.js';
+import type {
+  DatabaseSchema,
+  JobsTable,
+  RenditionsTable,
+  SubtitlesTable,
+  VideosTable,
+} from './schema.js';
 import {
   DbError,
   RecordNotFoundError,
@@ -16,10 +22,13 @@ import {
   type JobRepository,
   type NewJob,
   type NewRendition,
+  type NewSubtitle,
   type NewVideo,
   type Page,
   type Rendition,
   type RenditionRepository,
+  type Subtitle,
+  type SubtitleRepository,
   type Video,
   type VideoListOptions,
   type VideoPatch,
@@ -52,6 +61,17 @@ function toVideo(row: VideosTable): Video {
     ...row,
     // Postgres returns bigint columns as strings; SQLite returns numbers. Normalize.
     sizeBytes: row.sizeBytes === null ? null : Number(row.sizeBytes),
+    thumbnailSpriteCount:
+      row.thumbnailSpriteCount === null ? null : Number(row.thumbnailSpriteCount),
+  };
+}
+
+function toSubtitle(row: SubtitlesTable): Subtitle {
+  return {
+    ...row,
+    isDefault: Number(row.isDefault) === 1,
+    cueCount: Number(row.cueCount),
+    sizeBytes: Number(row.sizeBytes),
   };
 }
 
@@ -119,6 +139,8 @@ class KyselyVideoRepository implements VideoRepository {
       error: null,
       hlsManifestKey: null,
       dashManifestKey: null,
+      thumbnailTrackKey: null,
+      thumbnailSpriteCount: null,
       createdAt: now,
       updatedAt: now,
     };
@@ -247,11 +269,99 @@ class KyselyJobRepository implements JobRepository {
   }
 }
 
+class KyselySubtitleRepository implements SubtitleRepository {
+  constructor(private readonly db: Kysely<DatabaseSchema>) {}
+
+  async listForVideo(videoId: string): Promise<Subtitle[]> {
+    const rows = await this.db
+      .selectFrom('subtitles')
+      .selectAll()
+      .where('videoId', '=', videoId)
+      .orderBy('language', 'asc')
+      .execute();
+    return rows.map(toSubtitle);
+  }
+
+  async get(videoId: string, language: string): Promise<Subtitle | null> {
+    const row = await this.db
+      .selectFrom('subtitles')
+      .selectAll()
+      .where('videoId', '=', videoId)
+      .where('language', '=', language)
+      .executeTakeFirst();
+    return row ? toSubtitle(row) : null;
+  }
+
+  async upsert(input: NewSubtitle): Promise<Subtitle> {
+    const video = await this.db
+      .selectFrom('videos')
+      .select('id')
+      .where('id', '=', input.videoId)
+      .executeTakeFirst();
+    if (!video) throw new RecordNotFoundError('video', input.videoId);
+
+    const now = nowIso();
+    const isDefault = input.isDefault === true ? 1 : 0;
+    await this.db.transaction().execute(async (trx) => {
+      if (isDefault === 1) {
+        await trx
+          .updateTable('subtitles')
+          .set({ isDefault: 0, updatedAt: now })
+          .where('videoId', '=', input.videoId)
+          .execute();
+      }
+      const existing = await trx
+        .selectFrom('subtitles')
+        .select('id')
+        .where('videoId', '=', input.videoId)
+        .where('language', '=', input.language)
+        .executeTakeFirst();
+      const values = {
+        label: input.label,
+        storageKey: input.storageKey,
+        isDefault,
+        cueCount: input.cueCount,
+        sizeBytes: input.sizeBytes,
+        updatedAt: now,
+      };
+      if (existing) {
+        await trx.updateTable('subtitles').set(values).where('id', '=', existing.id).execute();
+      } else {
+        await trx
+          .insertInto('subtitles')
+          .values({
+            id: randomUUID(),
+            videoId: input.videoId,
+            language: input.language,
+            createdAt: now,
+            ...values,
+          })
+          .execute();
+      }
+    });
+
+    const saved = await this.get(input.videoId, input.language);
+    if (!saved)
+      throw new DbError(`subtitle ${input.videoId}/${input.language} vanished after save`);
+    return saved;
+  }
+
+  async delete(videoId: string, language: string): Promise<boolean> {
+    const result = await this.db
+      .deleteFrom('subtitles')
+      .where('videoId', '=', videoId)
+      .where('language', '=', language)
+      .executeTakeFirst();
+    return result.numDeletedRows > 0n;
+  }
+}
+
 /** `Database` implementation shared by every backend; only the Kysely dialect differs. */
 export class KyselyDatabase implements Database {
   readonly videos: VideoRepository;
   readonly jobs: JobRepository;
   readonly renditions: RenditionRepository;
+  readonly subtitles: SubtitleRepository;
 
   constructor(
     readonly backend: DbBackend,
@@ -260,6 +370,7 @@ export class KyselyDatabase implements Database {
     this.videos = new KyselyVideoRepository(db);
     this.jobs = new KyselyJobRepository(db);
     this.renditions = new KyselyRenditionRepository(db);
+    this.subtitles = new KyselySubtitleRepository(db);
   }
 
   async migrate(): Promise<void> {

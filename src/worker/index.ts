@@ -1,3 +1,5 @@
+import { access, constants } from 'node:fs/promises';
+
 import { bootstrapConfig } from '../config/index.js';
 import { createDatabase } from '../lib/db/index.js';
 import { createLogger } from '../lib/logger.js';
@@ -26,6 +28,28 @@ try {
   process.exit(1);
 }
 
+// The watermark image is read on every job, so check it once at startup.
+const watermark =
+  config.FEATURE_WATERMARK && config.WATERMARK_IMAGE_PATH
+    ? {
+        imagePath: config.WATERMARK_IMAGE_PATH,
+        position: config.WATERMARK_POSITION,
+        opacity: config.WATERMARK_OPACITY,
+      }
+    : undefined;
+if (watermark) {
+  try {
+    await access(watermark.imagePath, constants.R_OK);
+    log.info(watermark, 'watermark enabled');
+  } catch {
+    log.fatal(
+      { imagePath: watermark.imagePath },
+      'WATERMARK_IMAGE_PATH is not readable; fix it or set FEATURE_WATERMARK=false',
+    );
+    process.exit(1);
+  }
+}
+
 const db = await createDatabase(config);
 await db.migrate();
 const storage = await createStorage(config);
@@ -37,6 +61,8 @@ const processor = createTranscodeProcessor({
   av1Preset: config.AV1_PRESET,
   codecs: config.CODEC_LADDER,
   formats: config.PACKAGE_FORMATS,
+  thumbnails: config.FEATURE_THUMBNAILS,
+  ...(watermark ? { watermark } : {}),
   ...(config.WORK_DIR ? { workDir: config.WORK_DIR } : {}),
 });
 
@@ -66,6 +92,11 @@ log.info(
     codecs: config.CODEC_LADDER,
     ...(config.CODEC_LADDER.includes('av1') ? { av1Preset: config.AV1_PRESET } : {}),
     formats: config.PACKAGE_FORMATS,
+    features: {
+      thumbnails: config.FEATURE_THUMBNAILS,
+      subtitles: config.FEATURE_SUBTITLES,
+      watermark: config.FEATURE_WATERMARK,
+    },
     db: db.backend,
     storage: storage.backend,
   },

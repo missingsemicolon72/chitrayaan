@@ -17,6 +17,8 @@ export interface VideosTable {
   error: string | null;
   hlsManifestKey: string | null;
   dashManifestKey: string | null;
+  thumbnailTrackKey: string | null;
+  thumbnailSpriteCount: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -52,8 +54,23 @@ export interface RenditionsTable {
   createdAt: string;
 }
 
+export interface SubtitlesTable {
+  id: string;
+  videoId: string;
+  language: string;
+  label: string;
+  storageKey: string;
+  /** 0/1 rather than a boolean, so the same column type works on SQLite and Postgres. */
+  isDefault: number;
+  cueCount: number;
+  sizeBytes: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface DatabaseSchema {
   videos: VideosTable;
   jobs: JobsTable;
   renditions: RenditionsTable;
+  subtitles: SubtitlesTable;
 }

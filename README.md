@@ -119,12 +119,50 @@ If Redis is down when an upload finishes, the upload still succeeds and the job 
 in the database; the API enqueues such jobs again the next time it starts. `/healthz` reports
 `redis: error` (HTTP 503) in the meantime.
 
+## Optional features
+
+Three extras, each independently toggleable and **off by default** (decision #13). Turning a
+flag off hides the feature everywhere, including in served manifests, without deleting anything
+already produced.
+
+### Thumbnails (`FEATURE_THUMBNAILS=true`)
+
+The worker samples one preview every few seconds (2 s, stretching for long videos so a video
+yields at most ~200), tiles them into sprite sheets, and writes a WebVTT track whose cues carry
+`#xywh=` sprite coordinates, the format players use for hover previews. Output lands in
+`videos/<id>/thumbs/` and the video detail response gains `thumbnails.trackUrl`.
+
+### Subtitles (`FEATURE_SUBTITLES=true`)
+
+WebVTT tracks are uploaded per language; there is no auto-captioning (out of scope). Tracks are
+stored at `videos/<id>/subtitles/<lang>.vtt`, survive a re-transcode, and are woven into the HLS
+master and DASH manifest when those are served, so adding one takes effect immediately.
+
+```sh
+curl -X PUT "http://127.0.0.1:3000/api/videos/<id>/subtitles/en?label=English&default=true" \
+  -H "X-API-Key: $API_KEY" -H "Content-Type: text/vtt" --data-binary @captions.en.vtt
+curl -s -H "X-API-Key: $API_KEY" http://127.0.0.1:3000/api/videos/<id>/subtitles
+curl -X DELETE -H "X-API-Key: $API_KEY" http://127.0.0.1:3000/api/videos/<id>/subtitles/en
+```
+
+Uploads are validated (WebVTT header, cue timings, 5 MiB cap) and rejected with 400 if malformed.
+HLS also needs a media playlist per track; the API generates `subtitles/<lang>.m3u8` on request.
+
+### Watermark (`FEATURE_WATERMARK=true`)
+
+`WATERMARK_IMAGE_PATH` is composited once onto the decoded source, before the ladder split, so
+every rung carries it at a consistent relative size. `WATERMARK_POSITION` picks a corner (2%
+inset) and `WATERMARK_OPACITY` multiplies into the image's own alpha, so transparent PNGs stay
+transparent. The image is used at its native size, so scale it for your top rung. The worker
+refuses to start if the file is unreadable.
+
 ## Test player
 
 With the API running, open `http://127.0.0.1:3000/player/` in a browser. Enter the API key,
 pick a ready video, and play it through hls.js (HLS) and dash.js (DASH) side by side. The page
 shows the ladder, the active rendition, buffer level and an event log, and lets you pin a
-quality. The page and the player libraries are served without a key (a browser cannot attach
+quality. When the optional features are on it also lists subtitle tracks and gives a scrub bar
+that previews the thumbnail sprites. The page and the player libraries are served without a key (a browser cannot attach
 custom headers to a page load); every manifest and segment request it makes carries the key.
 The key is remembered in the browser's local storage for convenience. Deep links work too:
 `/player/?key=<API_KEY>&video=<id>&autoplay=1` connects, loads that video and starts both

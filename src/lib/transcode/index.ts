@@ -11,6 +11,7 @@ export {
 export {
   interpretProbeOutput,
   probe,
+  probeImageSize,
   ProbeError,
   type MediaInfo,
   type ProbeOptions,

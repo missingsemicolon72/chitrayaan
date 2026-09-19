@@ -111,6 +111,52 @@ export interface ProbeOptions {
   ffprobePath?: string;
 }
 
+/**
+ * Pixel dimensions of an image (or a video's first frame). Separate from `probe` because a
+ * still image has no duration, which `probe` insists on.
+ */
+export function probeImageSize(
+  filePath: string,
+  options: ProbeOptions = {},
+): Promise<{ width: number; height: number }> {
+  const args = [
+    '-v',
+    'error',
+    '-select_streams',
+    'v:0',
+    '-show_entries',
+    'stream=width,height',
+    '-of',
+    'csv=p=0',
+    filePath,
+  ];
+  return new Promise((resolve, reject) => {
+    const child = spawn(options.ffprobePath ?? 'ffprobe', args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    let stdout = '';
+    const stderr = new TailBuffer(10);
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk: string) => stderr.push(chunk));
+    child.once('error', (err) => reject(new ProbeError(`could not start ffprobe: ${err.message}`)));
+    child.once('close', (code) => {
+      const m = /^(\d+),(\d+)/m.exec(stdout.trim());
+      if (code !== 0 || !m) {
+        reject(
+          new ProbeError(`could not read image dimensions from ${filePath}`, stderr.toString()),
+        );
+        return;
+      }
+      resolve({ width: Number(m[1]), height: Number(m[2]) });
+    });
+  });
+}
+
 /** Inspect a media file with ffprobe. Rejects with `ProbeError` for unreadable input. */
 export function probe(filePath: string, options: ProbeOptions = {}): Promise<MediaInfo> {
   const args = ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', filePath];

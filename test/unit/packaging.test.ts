@@ -3,11 +3,14 @@ import { describe, expect, it } from 'vitest';
 import {
   buildLadderArgs,
   chunkSegmentPattern,
+  injectDashSubtitles,
+  injectHlsSubtitles,
   parseAttributeList,
   parseHlsMaster,
   parseIsoDuration,
   parseMpd,
   selectUploads,
+  type SubtitleTrackRef,
 } from '../../src/lib/packaging/index.js';
 import {
   AV1_LADDER,
@@ -98,6 +101,36 @@ describe('buildLadderArgs', () => {
     expect(joined).toContain('-adaptation_sets id=0,streams=0 -hls_playlist');
   });
 
+  it('adds the watermark as a second input, composited once before the split', () => {
+    const plans = planLadder(H264_LADDER, source({ width: 854, height: 480 }));
+    const args = buildLadderArgs('/in/src.mp4', plans, {
+      preset: 'medium',
+      watermark: { imagePath: '/logo.png', position: 'bottom-right', opacity: 0.4 },
+    });
+    expect(args.slice(0, 5)).toEqual(['-y', '-i', '/in/src.mp4', '-i', '/logo.png']);
+    const graph = args[args.indexOf('-filter_complex') + 1]!;
+    expect(graph).toBe(
+      '[1:v]format=rgba,colorchannelmixer=aa=0.4[wmlogo];' +
+        '[0:v][wmlogo]overlay=main_w-overlay_w-main_w*0.02:main_h-overlay_h-main_h*0.02[wmbase];' +
+        '[wmbase]split=2[s0][s1];' +
+        '[s0]scale=640:360,format=yuv420p[v0];' +
+        '[s1]scale=854:480,format=yuv420p[v1]',
+    );
+  });
+
+  it('feeds the watermarked frames to a single rung too', () => {
+    const plans = planLadder(H264_LADDER, source({ width: 320, height: 240 }));
+    const graph = buildLadderArgs('/in/src.mp4', plans, {
+      preset: 'medium',
+      watermark: { imagePath: '/logo.png', position: 'top-left', opacity: 1 },
+    })
+      .join(' ')
+      .split('-filter_complex ')[1]!
+      .split(' -map')[0];
+    expect(graph).toContain('[wmbase]scale=320:240,format=yuv420p[v0]');
+    expect(graph).not.toContain('split=');
+  });
+
   it('refuses an empty ladder and defaults the AV1 preset to 8', () => {
     expect(() => buildLadderArgs('/in/s.mp4', [], { preset: 'medium' })).toThrow(/at least one/);
     const plans = planLadder(AV1_LADDER, source({ width: 320, height: 240 }));
@@ -164,6 +197,81 @@ media_0.m3u8
 #EXT-X-STREAM-INF:BANDWIDTH=2929867,RESOLUTION=1280x720,CODECS="avc1.42c01f,mp4a.40.2",AUDIO="group_A1"
 media_1.m3u8
 `;
+
+describe('subtitle injection', () => {
+  const tracks: SubtitleTrackRef[] = [
+    {
+      language: 'en',
+      label: 'English',
+      isDefault: true,
+      hlsPlaylistUri: 'subtitles/en.m3u8',
+      vttUri: 'subtitles/en.vtt',
+    },
+    {
+      language: 'pt-BR',
+      label: 'Portugues "BR"',
+      isDefault: false,
+      hlsPlaylistUri: 'subtitles/pt-BR.m3u8',
+      vttUri: 'subtitles/pt-BR.vtt',
+    },
+  ];
+
+  it('declares the tracks and points every HLS variant at the group', () => {
+    const injected = injectHlsSubtitles(MASTER, tracks);
+    const lines = injected.split('\n');
+
+    const media = lines.filter((l) => l.startsWith('#EXT-X-MEDIA:TYPE=SUBTITLES'));
+    expect(media).toHaveLength(2);
+    expect(media[0]).toContain('GROUP-ID="subs"');
+    expect(media[0]).toContain('NAME="English"');
+    expect(media[0]).toContain('LANGUAGE="en"');
+    expect(media[0]).toContain('DEFAULT=YES');
+    expect(media[0]).toContain('URI="subtitles/en.m3u8"');
+    expect(media[1]).toContain('DEFAULT=NO');
+    // Quotes inside a label would break the attribute list.
+    expect(media[1]).toContain(`NAME="Portugues 'BR'"`);
+
+    const variants = lines.filter((l) => l.startsWith('#EXT-X-STREAM-INF:'));
+    expect(variants).toHaveLength(2);
+    expect(variants.every((l) => l.endsWith(',SUBTITLES="subs"'))).toBe(true);
+    // Declarations come before the first variant, and the audio group is untouched.
+    expect(lines.indexOf(media[0]!)).toBeLessThan(lines.indexOf(variants[0]!));
+    expect(injected).toContain('TYPE=AUDIO,GROUP-ID="group_A1"');
+    // The variant URIs still follow their #EXT-X-STREAM-INF lines.
+    expect(parseHlsMaster(injected).variants.map((v) => v.uri)).toEqual([
+      'media_0.m3u8',
+      'media_1.m3u8',
+    ]);
+  });
+
+  it('leaves manifests alone when there are no tracks and never double-tags a variant', () => {
+    expect(injectHlsSubtitles(MASTER, [])).toBe(MASTER);
+    expect(injectDashSubtitles(MPD, [])).toBe(MPD);
+
+    // Injection always starts from the stored manifest, but a variant that already points at
+    // the group must not be tagged twice.
+    const twice = injectHlsSubtitles(injectHlsSubtitles(MASTER, tracks), tracks);
+    expect(/,SUBTITLES="subs",SUBTITLES="subs"/.exec(twice)).toBeNull();
+    expect(twice.split(',SUBTITLES="subs"').length - 1).toBe(2);
+  });
+
+  it('adds a DASH text adaptation set per track, after the existing ids', () => {
+    const injected = injectDashSubtitles(MPD, tracks);
+    expect(injected).toContain(
+      '<AdaptationSet id="2" contentType="text" mimeType="text/vtt" lang="en">',
+    );
+    expect(injected).toContain(
+      '<AdaptationSet id="3" contentType="text" mimeType="text/vtt" lang="pt-BR">',
+    );
+    expect(injected).toContain('<BaseURL>subtitles/en.vtt</BaseURL>');
+    expect(injected).toContain('value="subtitle"');
+    expect(injected.indexOf('</Period>')).toBeGreaterThan(injected.indexOf('subtitles/pt-BR.vtt'));
+    // The existing representations survive unchanged.
+    const mpd = parseMpd(injected);
+    expect(mpd.adaptationSets).toBe(4);
+    expect(mpd.representations.filter((r) => r.contentType === 'video')).toHaveLength(2);
+  });
+});
 
 describe('manifest readers', () => {
   it('parses ISO durations', () => {

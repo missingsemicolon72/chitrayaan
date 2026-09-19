@@ -10,6 +10,7 @@ import { registerApiKeyAuth } from './plugins/auth.js';
 import { healthRoutes } from './routes/health.js';
 import { jobRoutes } from './routes/jobs.js';
 import { PLAYER_PREFIX, playerRoutes } from './routes/player.js';
+import { subtitleRoutes } from './routes/subtitles.js';
 import { uploadRoutes } from './routes/uploads.js';
 import { videoRoutes } from './routes/videos.js';
 
@@ -89,6 +90,7 @@ export async function buildApp(
   registerApiKeyAuth(app, config.API_KEY, { publicPrefixes: [PLAYER_PREFIX] });
 
   await app.register(healthRoutes);
+  await app.register(subtitleRoutes);
   await app.register(videoRoutes);
   await app.register(jobRoutes);
   await app.register(uploadRoutes);

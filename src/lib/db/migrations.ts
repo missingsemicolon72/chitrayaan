@@ -107,6 +107,40 @@ const migrations: Record<string, Migration> = {
       await db.schema.alterTable('videos').dropColumn('hls_manifest_key').execute();
     },
   },
+
+  '0004_optional_features': {
+    async up(db: Kysely<unknown>) {
+      await db.schema.alterTable('videos').addColumn('thumbnail_track_key', 'text').execute();
+      await db.schema.alterTable('videos').addColumn('thumbnail_sprite_count', 'integer').execute();
+
+      await db.schema
+        .createTable('subtitles')
+        .addColumn('id', 'text', (c) => c.primaryKey())
+        .addColumn('video_id', 'text', (c) =>
+          c.notNull().references('videos.id').onDelete('cascade'),
+        )
+        .addColumn('language', 'text', (c) => c.notNull())
+        .addColumn('label', 'text', (c) => c.notNull())
+        .addColumn('storage_key', 'text', (c) => c.notNull())
+        .addColumn('is_default', 'integer', (c) => c.notNull().defaultTo(0))
+        .addColumn('cue_count', 'integer', (c) => c.notNull().defaultTo(0))
+        .addColumn('size_bytes', 'bigint', (c) => c.notNull().defaultTo(0))
+        .addColumn('created_at', 'text', (c) => c.notNull())
+        .addColumn('updated_at', 'text', (c) => c.notNull())
+        .addUniqueConstraint('subtitles_video_id_language_unique', ['video_id', 'language'])
+        .execute();
+      await db.schema
+        .createIndex('subtitles_video_id_idx')
+        .on('subtitles')
+        .column('video_id')
+        .execute();
+    },
+    async down(db: Kysely<unknown>) {
+      await db.schema.dropTable('subtitles').execute();
+      await db.schema.alterTable('videos').dropColumn('thumbnail_sprite_count').execute();
+      await db.schema.alterTable('videos').dropColumn('thumbnail_track_key').execute();
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {
