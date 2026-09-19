@@ -170,6 +170,17 @@ describe('tus resumable uploads', () => {
     expect((await t.app.db.videos.list()).total).toBe(before);
   });
 
+  it('refuses a chunk that would push the upload past its declared length', async () => {
+    const declared = 32 * 1024;
+    const created = await create(declared);
+    const res = await patch(created.url!, 0, randomBytes(declared + 4096));
+    expect([400, 413]).toContain(res.status);
+
+    const stored = await t.app.storage.stat(`uploads/${created.id}`);
+    expect(stored === null || stored.size <= declared).toBe(true);
+    expect((await t.app.db.videos.get(created.id!))?.status).toBe('uploading');
+  });
+
   it('terminating an unfinished upload deletes its bytes and video row', async () => {
     const data = randomBytes(32 * 1024);
     const { url, id } = await create(data.length);

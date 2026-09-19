@@ -118,6 +118,8 @@ export interface GenerateThumbnailsOptions {
   /** Scratch directory; intermediates and the publishable output live in subdirectories. */
   workDir: string;
   durationSeconds: number;
+  /** Shares the job's deadline, so a hung extraction is killed with everything else. */
+  signal?: AbortSignal;
   log: Logger;
 }
 
@@ -149,6 +151,7 @@ export async function generateThumbnails(
   await runFfmpeg(buildExtractArgs(options.sourcePath, intervalSeconds), {
     ffmpegPath: options.ffmpegPath,
     cwd: framesDir,
+    ...(options.signal ? { signal: options.signal } : {}),
   });
 
   const frames = (await readdir(framesDir)).filter((f) => f.startsWith('thumb_')).sort();
@@ -161,6 +164,7 @@ export async function generateThumbnails(
   await runFfmpeg(buildSpriteArgs(grid, framesDir), {
     ffmpegPath: options.ffmpegPath,
     cwd: outputDir,
+    ...(options.signal ? { signal: options.signal } : {}),
   });
 
   await writeFile(

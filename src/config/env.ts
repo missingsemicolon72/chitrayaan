@@ -83,6 +83,14 @@ export const envSchema = z
     REDIS_URL: z.url().default('redis://127.0.0.1:6379'),
     /** Transcode jobs one worker process runs at once. FFmpeg is CPU-bound, so keep this low. */
     WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(1),
+    /** Total tries per job, including the first. Input problems are never retried. */
+    JOB_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
+    /** Delay before the second try; doubles for each try after that. */
+    JOB_BACKOFF_MS: z.coerce.number().int().min(0).default(5_000),
+    /** A transcode that outlives this is killed and the job fails without retrying. */
+    TRANSCODE_TIMEOUT_MINUTES: z.coerce.number().int().min(1).default(120),
+    /** Abandoned resumable uploads are deleted after this long. 0 disables the sweep. */
+    UPLOAD_EXPIRY_HOURS: z.coerce.number().min(0).default(24),
 
     // Transcoding (FFmpeg does the real work; these locate and tune it)
     FFMPEG_PATH: z.string().min(1).default('ffmpeg'),

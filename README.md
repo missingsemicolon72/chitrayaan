@@ -156,6 +156,25 @@ inset) and `WATERMARK_OPACITY` multiplies into the image's own alpha, so transpa
 transparent. The image is used at its native size, so scale it for your top rung. The worker
 refuses to start if the file is unreadable.
 
+## Failure handling
+
+- **Retries.** A job is tried `JOB_ATTEMPTS` times with exponential backoff from
+  `JOB_BACKOFF_MS`. Anything that will never succeed, an unreadable source, a file FFmpeg cannot
+  decode, a transcode that hit its timeout, fails immediately instead: the job record says why,
+  and the video is marked `failed` with the same message.
+- **Broken input.** Files that are not media, have no video stream, report no duration, or
+  decode part-way and then fall apart are all rejected on the first attempt. FFmpeg's own
+  complaint is quoted in the error, so `GET /api/jobs/:id` says what was wrong with the file.
+- **Oversized uploads.** Anything larger than `TUS_UPLOAD_MAX_SIZE_MB` is refused with 413,
+  before bytes are stored, as is a chunk that would push an upload past its declared length.
+- **Hung transcodes.** `TRANSCODE_TIMEOUT_MINUTES` bounds a job; FFmpeg is killed when it
+  expires and the job fails without retrying.
+- **Housekeeping.** The API reconciles jobs that never reached Redis and deletes uploads
+  abandoned for `UPLOAD_EXPIRY_HOURS`, at startup and every 15 minutes. A finished upload's
+  source is never swept, however old, and a partial upload that is still being written to is
+  left alone. Workers delete scratch directories left by a previous crash at startup.
+- **Errors.** Responses of 500 and above carry a generic message; details go to the log only.
+
 ## Test player
 
 With the API running, open `http://127.0.0.1:3000/player/` in a browser. Enter the API key,

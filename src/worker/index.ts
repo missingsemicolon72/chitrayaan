@@ -1,4 +1,5 @@
 import { access, constants } from 'node:fs/promises';
+import os from 'node:os';
 
 import { bootstrapConfig } from '../config/index.js';
 import { createDatabase } from '../lib/db/index.js';
@@ -6,6 +7,7 @@ import { createLogger } from '../lib/logger.js';
 import { createTranscodeWorker, TRANSCODE_QUEUE_NAME } from '../lib/queue/index.js';
 import { createStorage } from '../lib/storage/index.js';
 import { binaryVersion } from '../lib/transcode/index.js';
+import { sweepStaleWorkDirs } from './cleanup.js';
 import { createTranscodeProcessor } from './processors/transcode.js';
 import { createJobRunner } from './runner.js';
 
@@ -62,9 +64,13 @@ const processor = createTranscodeProcessor({
   codecs: config.CODEC_LADDER,
   formats: config.PACKAGE_FORMATS,
   thumbnails: config.FEATURE_THUMBNAILS,
+  timeoutMs: config.TRANSCODE_TIMEOUT_MINUTES * 60_000,
   ...(watermark ? { watermark } : {}),
   ...(config.WORK_DIR ? { workDir: config.WORK_DIR } : {}),
 });
+
+// A worker killed mid-job leaves its scratch directory behind.
+await sweepStaleWorkDirs(config.WORK_DIR ?? os.tmpdir(), log);
 
 let lastRedisErrorAt = 0;
 const handle = createTranscodeWorker({
@@ -92,6 +98,7 @@ log.info(
     codecs: config.CODEC_LADDER,
     ...(config.CODEC_LADDER.includes('av1') ? { av1Preset: config.AV1_PRESET } : {}),
     formats: config.PACKAGE_FORMATS,
+    timeoutMinutes: config.TRANSCODE_TIMEOUT_MINUTES,
     features: {
       thumbnails: config.FEATURE_THUMBNAILS,
       subtitles: config.FEATURE_SUBTITLES,

@@ -26,7 +26,15 @@ import {
   LocalDiskStorage,
   type ObjectStorage,
 } from '../../lib/storage/index.js';
-import { LADDERS, planLadder, probe, ProbeError, runFfmpeg } from '../../lib/transcode/index.js';
+import {
+  corruptInputReason,
+  FfmpegError,
+  LADDERS,
+  planLadder,
+  probe,
+  ProbeError,
+  runFfmpeg,
+} from '../../lib/transcode/index.js';
 import type { TranscodeProcessor } from '../types.js';
 
 export interface TranscodeProcessorOptions {
@@ -49,6 +57,8 @@ export interface TranscodeProcessorOptions {
   watermark?: WatermarkConfig;
   /** Produce scrubbing-preview sprites and a WebVTT track (FEATURE_THUMBNAILS). */
   thumbnails?: boolean;
+  /** Kill FFmpeg and fail the job (without retrying) after this long. Defaults to 2 hours. */
+  timeoutMs?: number;
 }
 
 /** Progress budget: probe 0-2, encoding 2-85, upload 85-93, thumbnails 93-99, bookkeeping 100. */
@@ -75,6 +85,25 @@ async function materializeSource(
   log.info({ sourceKey }, 'downloading source to work dir');
   await storage.downloadToFile(sourceKey, local);
   return local;
+}
+
+/**
+ * Turn an FFmpeg failure into the right kind of error. A timeout or an input FFmpeg cannot read
+ * will never succeed on a retry, so both become `UnrecoverableError`; anything else (a full
+ * disk, a killed process, a transient fault) stays retryable.
+ */
+function encodeFailure(err: unknown, timedOut: boolean, timeoutMs: number): Error {
+  if (timedOut) {
+    const minutes = Math.round(timeoutMs / 60_000);
+    return new UnrecoverableError(
+      `transcode exceeded the ${minutes} minute limit and was stopped; raise TRANSCODE_TIMEOUT_MINUTES if this source is legitimately that long`,
+    );
+  }
+  if (err instanceof FfmpegError) {
+    const reason = corruptInputReason(err.stderrTail);
+    if (reason !== null) return new UnrecoverableError(`source file is unusable: ${reason}`);
+  }
+  return err instanceof Error ? err : new Error(String(err));
 }
 
 /**
@@ -105,6 +134,7 @@ export function createTranscodeProcessor(options: TranscodeProcessorOptions): Tr
   const codecs = options.codecs ?? ['h264'];
   const formats = options.formats ?? ['hls', 'dash'];
   const av1Preset = options.av1Preset ?? 8;
+  const timeoutMs = options.timeoutMs ?? 120 * 60_000;
 
   return async ({ job, video, db, storage, log, reportProgress }) => {
     if (!video.sourceKey) throw new UnrecoverableError(`video ${video.id} has no source file`);
@@ -113,6 +143,8 @@ export function createTranscodeProcessor(options: TranscodeProcessorOptions): Tr
     const workRoot = options.workDir ?? os.tmpdir();
     await mkdir(workRoot, { recursive: true });
     const workDir = await mkdtemp(path.join(workRoot, `chitrayaan-${job.id.slice(0, 8)}-`));
+    // One deadline for the whole job: a hung FFmpeg is killed rather than holding the worker.
+    const deadline = AbortSignal.timeout(timeoutMs);
     try {
       const sourcePath = await materializeSource(storage, sourceKey, workDir, log);
 
@@ -173,16 +205,24 @@ export function createTranscodeProcessor(options: TranscodeProcessorOptions): Tr
       );
 
       const started = Date.now();
-      const { stderrTail } = await runFfmpeg(args, {
-        ffmpegPath: options.ffmpegPath,
-        cwd: outDir,
-        durationSeconds: info.durationSeconds,
-        onProgress: (p) => {
-          if (p.percent === null) return;
-          const pct = ENCODE_START + ((ENCODE_END - ENCODE_START) * p.percent) / 100;
-          reportProgress(pct).catch((err: unknown) => log.warn({ err }, 'progress update failed'));
-        },
-      });
+      let stderrTail: string;
+      try {
+        ({ stderrTail } = await runFfmpeg(args, {
+          ffmpegPath: options.ffmpegPath,
+          cwd: outDir,
+          durationSeconds: info.durationSeconds,
+          signal: deadline,
+          onProgress: (p) => {
+            if (p.percent === null) return;
+            const pct = ENCODE_START + ((ENCODE_END - ENCODE_START) * p.percent) / 100;
+            reportProgress(pct).catch((err: unknown) =>
+              log.warn({ err }, 'progress update failed'),
+            );
+          },
+        }));
+      } catch (err) {
+        throw encodeFailure(err, deadline.aborted, timeoutMs);
+      }
       if (stderrTail) log.warn({ stderrTail }, 'ffmpeg warnings');
       log.info({ encodeSeconds: Math.round((Date.now() - started) / 100) / 10 }, 'ladder encoded');
 
@@ -250,6 +290,7 @@ export function createTranscodeProcessor(options: TranscodeProcessorOptions): Tr
             sourcePath,
             workDir,
             durationSeconds: info.durationSeconds,
+            signal: deadline,
             log,
           });
           for (const file of thumbs.files) {

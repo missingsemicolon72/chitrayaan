@@ -29,6 +29,37 @@ export const CLIPS: Record<string, Clip> = {
   'portrait-1080x1920-5s.mp4': { size: '1080x1920', fps: 30, seconds: 5, audio: true },
 };
 
+/**
+ * Media that is technically valid but unusable as a video source. Unlike `BROKEN` these are
+ * produced by FFmpeg, so they exercise the "probe succeeds, content is wrong" path.
+ */
+export const DEGENERATE: Record<string, (out: string) => string[]> = {
+  // A container with no frames at all: nothing to transcode, no duration to report.
+  'zero-frames.mp4': (out) => [
+    '-y',
+    '-f',
+    'lavfi',
+    '-i',
+    'testsrc2=size=320x240:rate=30',
+    '-frames:v',
+    '0',
+    out,
+  ],
+  // Sound with no video stream.
+  'audio-only.m4a': (out) => [
+    '-y',
+    '-f',
+    'lavfi',
+    '-i',
+    'sine=frequency=440:sample_rate=48000',
+    '-t',
+    '3',
+    '-c:a',
+    'aac',
+    out,
+  ],
+};
+
 /** Deliberately broken inputs, derived from the clips above or written directly. */
 export const BROKEN = {
   /** First 64 KiB of a valid MP4: header present, media data cut off. */
@@ -110,6 +141,12 @@ export async function generateFixtures(): Promise<boolean> {
     if (await exists(out)) continue;
     console.log(`[fixtures] generating ${name}`);
     await run(clipArgs(clip, out));
+  }
+  for (const [name, args] of Object.entries(DEGENERATE)) {
+    const out = fixturePath(name);
+    if (await exists(out)) continue;
+    console.log(`[fixtures] generating ${name}`);
+    await run(args(out));
   }
   for (const [name, make] of Object.entries(BROKEN)) {
     const out = fixturePath(name);

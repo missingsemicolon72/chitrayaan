@@ -1,6 +1,8 @@
 export {
   binaryVersion,
+  corruptInputReason,
   FfmpegError,
+  looksLikeCorruptInput,
   parseProgressBlock,
   runFfmpeg,
   TailBuffer,

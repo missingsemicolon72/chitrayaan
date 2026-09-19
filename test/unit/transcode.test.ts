@@ -7,6 +7,7 @@ import {
   H264_LADDER,
   interpretProbeOutput,
   LADDERS,
+  looksLikeCorruptInput,
   parseProgressBlock,
   planLadder,
   planRendition,
@@ -148,6 +149,33 @@ describe('parseProgressBlock', () => {
     expect(parseProgressBlock({ out_time: '00:00:02.500000' }, 10).outTimeSeconds).toBe(2.5);
     expect(parseProgressBlock({ out_time_us: 'N/A' }, 10).outTimeSeconds).toBe(0);
     expect(parseProgressBlock({ out_time_us: '1000000' }, undefined).percent).toBeNull();
+  });
+});
+
+describe('looksLikeCorruptInput', () => {
+  it('recognises the ways FFmpeg reports unusable input', () => {
+    for (const line of [
+      '[in#0] Error opening input: Invalid data found when processing input',
+      '[mov,mp4 @ 0x1] moov atom not found',
+      '[h264 @ 0x1] Invalid NAL unit size (94017 > 54606).',
+      'Could not find codec parameters for stream 0',
+      'Output file is empty, nothing was encoded',
+      'partial file',
+    ]) {
+      expect(looksLikeCorruptInput(line), line).toBe(true);
+    }
+  });
+
+  it('does not claim ordinary failures are bad input', () => {
+    for (const line of [
+      'No space left on device',
+      'Cannot allocate memory',
+      'Conversion failed!',
+      'Error while filtering: Operation not permitted',
+      '',
+    ]) {
+      expect(looksLikeCorruptInput(line), line).toBe(false);
+    }
   });
 });
 

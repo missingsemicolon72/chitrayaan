@@ -21,6 +21,11 @@ export function sourceKeyForUpload(uploadId: string): string {
 /**
  * tus datastore matching the active storage backend. Local disk -> `@tus/file-store` rooted at
  * `<LOCAL_STORAGE_PATH>/uploads`. S3 -> `@tus/s3-store`, arriving with Milestone 11.
+ *
+ * tus's own expiration is deliberately left off: `FileStore.write` does not persist the new
+ * offset, so its `deleteExpired` treats *finished* uploads as incomplete and would delete the
+ * sources of transcoded videos. Abandoned uploads are swept in `uploadRoutes` instead, using
+ * the video's status as the record of whether an upload ever finished.
  */
 export function createTusDatastore(storage: ObjectStorage): DataStore {
   if (storage instanceof LocalDiskStorage) {

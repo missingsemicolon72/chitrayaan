@@ -29,6 +29,11 @@ export interface TestAppOptions {
   listen?: boolean;
   /** Extra env overrides on top of the test defaults. */
   env?: Record<string, string>;
+  /**
+   * Queue retry settings. Tests default to a single attempt so a deliberate failure settles at
+   * once; retry behaviour has its own tests.
+   */
+  queue?: { attempts?: number; backoffMs?: number };
 }
 
 /**
@@ -46,7 +51,11 @@ export async function createTestApp(options: TestAppOptions = {}): Promise<TestA
     ...options.env,
   });
   const queuePrefix = testQueuePrefix();
-  const queue = new TranscodeQueue(config.REDIS_URL, { prefix: queuePrefix });
+  const queue = new TranscodeQueue(config.REDIS_URL, {
+    prefix: queuePrefix,
+    attempts: options.queue?.attempts ?? 1,
+    backoffMs: options.queue?.backoffMs ?? 10,
+  });
   const app = await buildApp(config, { queue });
 
   let baseUrl = '';

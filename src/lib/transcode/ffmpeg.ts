@@ -24,6 +24,38 @@ export class TailBuffer {
   }
 }
 
+/**
+ * Messages FFmpeg emits when the *input* is the problem rather than the encode. A job that
+ * fails this way is hopeless, so the caller marks it unrecoverable instead of retrying.
+ */
+const CORRUPT_INPUT_PATTERNS = [
+  /invalid data found when processing input/i,
+  /moov atom not found/i,
+  /could not find codec parameters/i,
+  /invalid nal unit size/i,
+  /does not contain any stream/i,
+  /unknown format/i,
+  /partial file/i,
+  /output file is empty/i,
+];
+
+/**
+ * The stderr line that identifies unusable input, or null when nothing in the output says so.
+ * The first matching line is returned: later lines are usually the muxer complaining about the
+ * consequences rather than the cause.
+ */
+export function corruptInputReason(stderr: string): string | null {
+  for (const line of stderr.split(/\r?\n/)) {
+    if (CORRUPT_INPUT_PATTERNS.some((pattern) => pattern.test(line))) return line.trim();
+  }
+  return null;
+}
+
+/** True when an FFmpeg failure looks like unusable input rather than a transient fault. */
+export function looksLikeCorruptInput(stderr: string): boolean {
+  return corruptInputReason(stderr) !== null;
+}
+
 export class FfmpegError extends Error {
   constructor(
     message: string,
