@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { Server as TusServer } from '@tus/server';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
-import { createTusDatastore, sourceKeyForUpload } from '../../lib/storage/tus-store.js';
+import { createTusIntegration } from '../../lib/storage/tus-store.js';
 
 export const UPLOADS_PATH = '/api/uploads';
 export const TUS_CONTENT_TYPE = 'application/offset+octet-stream';
@@ -51,7 +51,8 @@ export async function uploadRoutes(app: FastifyInstance): Promise<void> {
   const { config, db, storage } = app;
   const expiryMs = config.UPLOAD_EXPIRY_HOURS * 60 * 60 * 1000;
 
-  const datastore = createTusDatastore(storage);
+  // Where finished uploads land depends on the backend, so the datastore reports its own layout.
+  const { datastore, sourceKeyFor } = createTusIntegration(storage);
   const tus = new TusServer({
     path: UPLOADS_PATH,
     datastore,
@@ -76,7 +77,7 @@ export async function uploadRoutes(app: FastifyInstance): Promise<void> {
     },
 
     async onUploadFinish(_req, upload) {
-      const sourceKey = sourceKeyForUpload(upload.id);
+      const sourceKey = sourceKeyFor(upload.id);
       const video = await db.videos.update(upload.id, {
         status: 'uploaded',
         sourceKey,
@@ -134,7 +135,7 @@ export async function uploadRoutes(app: FastifyInstance): Promise<void> {
     let uploads = 0;
     let videos = 0;
     for (const id of candidates) {
-      const partial = await storage.stat(sourceKeyForUpload(id));
+      const partial = await storage.stat(sourceKeyFor(id));
       // Still being written to? The client is mid-upload, however old the record is.
       if (partial && partial.lastModified > cutoff) continue;
       if (partial) {
@@ -144,9 +145,9 @@ export async function uploadRoutes(app: FastifyInstance): Promise<void> {
         } catch (err) {
           app.log.debug({ err, videoId: id }, 'tus had no record of this upload; deleting bytes');
         }
-        // Belt and braces: the payload must go even if tus lost track of it.
-        await storage.delete(sourceKeyForUpload(id));
-        await storage.delete(`${sourceKeyForUpload(id)}.json`);
+        // Belt and braces: the payload must go even if tus lost track of it. Its sidecar
+        // metadata is the datastore's business, and there is none when it has no record.
+        await storage.delete(sourceKeyFor(id));
         uploads += 1;
       }
       await db.videos.delete(id);

@@ -7,7 +7,9 @@ import type { Migration, MigrationProvider } from 'kysely/migration';
  * here; application code sees them as camelCase via `CamelCasePlugin`.
  *
  * Timestamps are ISO 8601 UTC strings in TEXT columns on every backend: portable, sortable,
- * and free of timezone surprises between drivers.
+ * and free of timezone surprises between drivers. Durations use `double precision` rather than
+ * `real`, because Postgres's `real` is single precision and would round them; SQLite stores
+ * both as the same 8-byte value, so existing databases are unaffected.
  *
  * Keys are applied in lexicographic order, so keep the numeric prefix zero-padded.
  */
@@ -22,7 +24,7 @@ const migrations: Record<string, Migration> = {
         .addColumn('source_key', 'text')
         .addColumn('size_bytes', 'bigint')
         .addColumn('status', 'text', (c) => c.notNull())
-        .addColumn('duration_seconds', 'real')
+        .addColumn('duration_seconds', 'double precision')
         .addColumn('width', 'integer')
         .addColumn('height', 'integer')
         .addColumn('error', 'text')
@@ -82,7 +84,7 @@ const migrations: Record<string, Migration> = {
         .addColumn('playlist_key', 'text', (c) => c.notNull())
         .addColumn('segment_count', 'integer', (c) => c.notNull().defaultTo(0))
         .addColumn('size_bytes', 'bigint')
-        .addColumn('duration_seconds', 'real')
+        .addColumn('duration_seconds', 'double precision')
         .addColumn('created_at', 'text', (c) => c.notNull())
         .addUniqueConstraint('renditions_video_id_name_unique', ['video_id', 'name'])
         .execute();

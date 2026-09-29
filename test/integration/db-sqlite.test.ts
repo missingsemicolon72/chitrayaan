@@ -62,10 +62,19 @@ describe('SQLite driver specifics', () => {
     }
   });
 
-  it('refuses postgres for now', async () => {
-    await expect(
-      createDatabase({ DB_BACKEND: 'postgres', SQLITE_PATH: ':memory:' }),
-    ).rejects.toThrow(/Milestone 11/);
+  it('createDatabase picks the sqlite driver, ignoring any Postgres settings', async () => {
+    const db = await createDatabase({
+      DB_BACKEND: 'sqlite',
+      SQLITE_PATH: ':memory:',
+      DATABASE_URL: 'postgres://ignored@127.0.0.1:5432/nope',
+    });
+    try {
+      expect(db.backend).toBe('sqlite');
+      await db.migrate();
+      await expect(db.ping()).resolves.toBeUndefined();
+    } finally {
+      await db.close();
+    }
   });
 
   it('rejects ping after close', async () => {

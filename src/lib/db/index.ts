@@ -1,5 +1,6 @@
 import type { AppConfig } from '../../config/index.js';
 import { KyselyDatabase } from './kysely-database.js';
+import { createPostgresKysely } from './postgres.js';
 import { createSqliteKysely } from './sqlite.js';
 import type { Database } from './types.js';
 
@@ -37,7 +38,7 @@ export {
   type VideoStatus,
 } from './types.js';
 
-export type DatabaseConfig = Pick<AppConfig, 'DB_BACKEND' | 'SQLITE_PATH'>;
+export type DatabaseConfig = Pick<AppConfig, 'DB_BACKEND' | 'SQLITE_PATH' | 'DATABASE_URL'>;
 
 /** Open the database selected by `DB_BACKEND`. Call `migrate()` before use. */
 export async function createDatabase(config: DatabaseConfig): Promise<Database> {
@@ -45,6 +46,9 @@ export async function createDatabase(config: DatabaseConfig): Promise<Database> 
     case 'sqlite':
       return Promise.resolve(new KyselyDatabase('sqlite', createSqliteKysely(config.SQLITE_PATH)));
     case 'postgres':
-      throw new Error('DB_BACKEND=postgres is not available yet (planned for Milestone 11)');
+      // Config validation guarantees DATABASE_URL is set for this backend.
+      return Promise.resolve(
+        new KyselyDatabase('postgres', createPostgresKysely(config.DATABASE_URL!)),
+      );
   }
 }

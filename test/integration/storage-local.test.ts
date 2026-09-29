@@ -78,14 +78,17 @@ describe('LocalDiskStorage specifics', () => {
     }
   });
 
-  it('createStorage picks the local driver and refuses s3 for now', async () => {
+  it('createStorage picks the local driver, ignoring any S3 settings', async () => {
     const root = await tempRoot();
     try {
-      const storage = await createStorage({ STORAGE_BACKEND: 'local', LOCAL_STORAGE_PATH: root });
+      const storage = await createStorage({
+        STORAGE_BACKEND: 'local',
+        LOCAL_STORAGE_PATH: root,
+        S3_FORCE_PATH_STYLE: true,
+      });
       expect(storage.backend).toBe('local');
-      await expect(
-        createStorage({ STORAGE_BACKEND: 's3', LOCAL_STORAGE_PATH: root }),
-      ).rejects.toThrow(/Milestone 11/);
+      await storage.put('a.txt', 'x');
+      expect(await storage.exists('a.txt')).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

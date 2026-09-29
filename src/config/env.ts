@@ -73,6 +73,8 @@ export const envSchema = z
     S3_ACCESS_KEY: z.string().min(1).optional(),
     S3_SECRET_KEY: z.string().min(1).optional(),
     S3_REGION: z.string().min(1).optional(),
+    /** MinIO and most S3-compatible servers need path-style addressing; AWS accepts it too. */
+    S3_FORCE_PATH_STYLE: envBoolean(true),
 
     // Metadata DB (decision #7: SQLite for local mode, Postgres for cloud mode)
     DB_BACKEND: z.enum(['sqlite', 'postgres']).default('sqlite'),

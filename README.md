@@ -74,6 +74,46 @@ curl -s -H "X-API-Key: $API_KEY" http://127.0.0.1:3000/api/jobs/<jobId>
 curl -s -H "X-API-Key: $API_KEY" "http://127.0.0.1:3000/api/jobs?status=queued"
 ```
 
+## Storage and database backends
+
+Two modes, selected by environment variables and meant to be used in pairs:
+
+| Mode  | `STORAGE_BACKEND` | `DB_BACKEND` | Needs                          |
+| ----- | ----------------- | ------------ | ------------------------------ |
+| local | `local`           | `sqlite`     | nothing but a directory        |
+| cloud | `s3`              | `postgres`   | an S3-compatible server and PG |
+
+Both pairs run the same code: one `ObjectStorage` interface with a disk and an S3 driver, and
+one set of repositories over Kysely with a SQLite and a Postgres dialect. Parity is not a claim,
+it is enforced: `test/contracts/` holds behavioural suites that every driver must pass, and the
+cloud suites run the identical tests against MinIO and Postgres.
+
+```sh
+# Cloud mode, with MinIO and Postgres reachable locally
+STORAGE_BACKEND=s3 S3_ENDPOINT=http://127.0.0.1:9000 S3_BUCKET=chitrayaan \
+S3_ACCESS_KEY=minioadmin S3_SECRET_KEY=minioadmin S3_REGION=us-east-1 \
+DB_BACKEND=postgres DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/chitrayaan \
+npm run dev
+```
+
+The bucket and the schema are created on demand, as the local mode creates its directory and
+SQLite file. One layout difference is worth knowing: on disk the tus library stores an upload at
+`uploads/<id>`, while on S3 it keys the object by upload id at the bucket root. The video record
+stores whichever key applies, so nothing downstream cares.
+
+The parity suites skip themselves unless the services are running. They expect Postgres at
+`postgres://chitrayaan:chitrayaan@127.0.0.1:5432/chitrayaan_test` and an S3 server at
+`http://127.0.0.1:9000` with the usual dev credentials; override with `TEST_DATABASE_URL`,
+`TEST_S3_ENDPOINT`, `TEST_S3_ACCESS_KEY` and `TEST_S3_SECRET_KEY`.
+
+```sh
+psql -U postgres -c "CREATE ROLE chitrayaan LOGIN PASSWORD 'chitrayaan' CREATEDB;"
+psql -U postgres -c "CREATE DATABASE chitrayaan_test OWNER chitrayaan;"
+```
+
+Any S3-compatible server works. MinIO no longer publishes prebuilt binaries, so these were last
+verified against SeaweedFS (`weed server -s3 -s3.port=9000 -s3.config=<identities.json>`).
+
 ## Processing
 
 A finished upload records a `transcode` job and hands it to BullMQ. Run at least one worker
