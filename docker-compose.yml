@@ -1,0 +1,146 @@
+# The whole stack for local development: Redis, Postgres, an S3-compatible server, the API and
+# a worker. It runs in cloud mode (S3 + Postgres), which is the pairing these services exist for.
+#
+#   docker compose up --build        start everything
+#   docker compose logs -f worker    watch a transcode
+#   docker compose down -v           stop and discard the data volumes
+#
+# Nothing here is exposed beyond localhost, and only the API and the S3 console ports are
+# published: Redis and Postgres stay on the compose network so they cannot clash with the ones
+# you may already run on this machine.
+
+x-app: &app
+  image: chitrayaan:local
+  restart: unless-stopped
+  environment: &app-env
+    NODE_ENV: production
+    LOG_LEVEL: ${LOG_LEVEL:-info}
+    # Change this. It is the only thing standing between the API and the internet.
+    API_KEY: ${API_KEY:-chitrayaan-development-key}
+
+    REDIS_URL: redis://redis:6379
+    WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}
+
+    DB_BACKEND: postgres
+    DATABASE_URL: postgres://chitrayaan:chitrayaan@postgres:5432/chitrayaan
+
+    STORAGE_BACKEND: s3
+    S3_ENDPOINT: http://s3:9000
+    S3_BUCKET: ${S3_BUCKET:-chitrayaan}
+    S3_REGION: us-east-1
+    # These must match docker/s3-identities.json.
+    S3_ACCESS_KEY: chitrayaan
+    S3_SECRET_KEY: chitrayaan-dev-secret
+
+    FFMPEG_PRESET: ${FFMPEG_PRESET:-veryfast}
+    CODEC_LADDER: ${CODEC_LADDER:-h264}
+    PACKAGE_FORMATS: ${PACKAGE_FORMATS:-hls,dash}
+    # Optional features, off unless you turn them on (see the README).
+    FEATURE_THUMBNAILS: ${FEATURE_THUMBNAILS:-false}
+    FEATURE_SUBTITLES: ${FEATURE_SUBTITLES:-false}
+    FEATURE_WATERMARK: ${FEATURE_WATERMARK:-false}
+  depends_on:
+    redis:
+      condition: service_healthy
+    postgres:
+      condition: service_healthy
+    s3:
+      condition: service_started
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ['redis-server', '--save', '60', '1', '--loglevel', 'warning']
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: chitrayaan
+      POSTGRES_PASSWORD: chitrayaan
+      POSTGRES_DB: chitrayaan
+    volumes:
+      # Postgres 18's image wants a single mount at /var/lib/postgresql and puts the cluster in
+      # a versioned subdirectory itself, so a major upgrade can use pg_upgrade --link later.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U chitrayaan -d chitrayaan']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # S3-compatible object storage. MinIO stopped publishing public images and binaries, so this
+  # is SeaweedFS, which speaks the same API. Every bucket becomes its own volume collection
+  # here, hence the generous volume ceiling.
+  s3:
+    build:
+      context: ./docker/s3
+    image: chitrayaan-s3:local
+    restart: unless-stopped
+    command:
+      - server
+      - -dir=/data
+      # Its master, volume and filer all live in this one container, so they address each other
+      # over loopback: advertising the service name instead leaves raft unable to elect a
+      # leader. Listeners still bind every interface, so `s3:9000` works across the network.
+      - -ip=127.0.0.1
+      - -ip.bind=0.0.0.0
+      - -master.volumeSizeLimitMB=1024
+      - -volume.max=100
+      - -filer
+      - -s3
+      - -s3.port=9000
+      # Credentials come from the image (see docker/s3/Dockerfile), not a bind mount.
+      - -s3.config=/etc/chitrayaan-s3/identities.json
+    volumes:
+      - s3-data:/data
+    ports:
+      - '${S3_PORT:-9000}:9000'
+
+  api:
+    <<: *app
+    # Only this service builds the image; the worker runs the very same one.
+    build:
+      context: .
+    # The S3 image ships no healthcheck tool, so the app waits for it before starting.
+    command:
+      ['node', 'docker/wait-for-http.mjs', 'http://s3:9000', '--', 'node', 'dist/api/server.js']
+    environment:
+      <<: *app-env
+      HOST: 0.0.0.0
+      PORT: 3000
+    ports:
+      - '${API_PORT:-3000}:3000'
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  worker:
+    <<: *app
+    command:
+      ['node', 'docker/wait-for-http.mjs', 'http://s3:9000', '--', 'node', 'dist/worker/index.js']
+    # Transcoding is CPU-bound: raise this to run more videos at once.
+    deploy:
+      replicas: ${WORKER_REPLICAS:-1}
+
+volumes:
+  redis-data:
+  postgres-data:
+  s3-data:

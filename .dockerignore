@@ -1,0 +1,29 @@
+# Everything the image builds for itself, or must never carry.
+node_modules/
+dist/
+coverage/
+data/
+.git/
+.github/
+.vscode/
+.idea/
+
+# Local environment and runtime state
+.env
+.env.*
+!.env.example
+*.log
+
+# Tests never run inside the image, and the sample clips are large
+test/
+
+# Docs and tooling that do not belong in a runtime image
+README.md
+CLAUDE.md
+.fable-checkpoint.md
+eslint.config.js
+vitest.config.ts
+.prettier*
+.editorconfig
+.nvmrc
+.gitattributes

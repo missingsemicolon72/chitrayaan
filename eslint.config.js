@@ -41,5 +41,20 @@ export default defineConfig(
     files: ['test/**'],
     rules: { 'no-console': 'off' },
   },
+  {
+    // Container entrypoint helpers: plain Node scripts, outside the TypeScript program, whose
+    // whole job is to report progress while they wait.
+    files: ['docker/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+        fetch: 'readonly',
+        AbortSignal: 'readonly',
+        setTimeout: 'readonly',
+      },
+    },
+    rules: { 'no-console': 'off' },
+  },
   prettier,
 );

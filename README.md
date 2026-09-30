@@ -5,8 +5,10 @@ design decisions, architecture, and milestone plan — that file is the source o
 
 ## Prerequisites
 
+Either Docker (see below), or, to run it directly:
+
 - Node.js 22+ (see `.nvmrc`)
-- FFmpeg on `PATH` (needed from Milestone 5 onward)
+- FFmpeg on `PATH`
 - Redis reachable at `REDIS_URL` (a Redis inside WSL works from Windows via
   `redis://127.0.0.1:6379` as long as the WSL distro is running)
 
@@ -16,6 +18,35 @@ design decisions, architecture, and milestone plan — that file is the source o
 npm install
 cp .env.example .env   # then set API_KEY to a long random string
 ```
+
+## Running with Docker
+
+The compose file brings up the whole stack, so nothing needs installing but Docker:
+
+```sh
+docker compose up --build
+```
+
+That starts Redis, Postgres, an S3-compatible server, the API on
+[http://127.0.0.1:3000](http://127.0.0.1:3000) and one worker, wired together in cloud mode.
+The test player is at `/player/` and the API key defaults to `chitrayaan-development-key`.
+**Change it** before this is reachable by anything but you, by putting `API_KEY=...` in a `.env`
+file next to the compose file.
+
+| Task                     | Command                                        |
+| ------------------------ | ---------------------------------------------- |
+| Watch a transcode        | `docker compose logs -f worker`                |
+| Run more workers at once | `WORKER_REPLICAS=3 docker compose up -d`       |
+| Turn a feature on        | `FEATURE_THUMBNAILS=true docker compose up -d` |
+| Stop, keeping data       | `docker compose down`                          |
+| Stop and wipe data       | `docker compose down -v`                       |
+
+Both processes run from one image, so they can never drift apart; only the command differs.
+Redis and Postgres are not published to the host, so they cannot collide with instances you
+already run. The API and the S3 server are, on `API_PORT` and `S3_PORT` (3000 and 9000).
+
+MinIO withdrew its public images and binaries, so the S3 service is SeaweedFS, which speaks the
+same API. Any S3-compatible server works: point `S3_ENDPOINT` elsewhere and drop the service.
 
 ## Scripts
 
