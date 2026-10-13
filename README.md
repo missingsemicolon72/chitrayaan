@@ -29,21 +29,26 @@ docker compose up --build
 
 That starts Redis, Postgres, an S3-compatible server, the API on
 [http://127.0.0.1:3000](http://127.0.0.1:3000) and one worker, wired together in cloud mode.
+Live ingest is a separate service you add with the `live` profile.
 The test player is at `/player/` and the API key defaults to `chitrayaan-development-key`.
 **Change it** before this is reachable by anything but you, by putting `API_KEY=...` in a `.env`
 file next to the compose file.
 
-| Task                     | Command                                        |
-| ------------------------ | ---------------------------------------------- |
-| Watch a transcode        | `docker compose logs -f worker`                |
-| Run more workers at once | `WORKER_REPLICAS=3 docker compose up -d`       |
-| Turn a feature on        | `FEATURE_THUMBNAILS=true docker compose up -d` |
-| Stop, keeping data       | `docker compose down`                          |
-| Stop and wipe data       | `docker compose down -v`                       |
+| Task                     | Command                                                     |
+| ------------------------ | ----------------------------------------------------------- |
+| Watch a transcode        | `docker compose logs -f worker`                             |
+| Run more workers at once | `WORKER_REPLICAS=3 docker compose up -d`                    |
+| Turn a feature on        | `FEATURE_THUMBNAILS=true docker compose up -d`              |
+| Add live ingest          | `RTMP_STREAM_KEY=<key> docker compose --profile live up -d` |
+| Watch live ingest        | `docker compose logs -f live`                               |
+| Stop, keeping data       | `docker compose --profile live down`                        |
+| Stop and wipe data       | `docker compose --profile live down -v`                     |
 
-Both processes run from one image, so they can never drift apart; only the command differs.
+Without `--profile live`, `down` leaves a running live ingest container behind. All three
+processes run from one image, so they can never drift apart; only the command differs.
 Redis and Postgres are not published to the host, so they cannot collide with instances you
-already run. The API and the S3 server are, on `API_PORT` and `S3_PORT` (3000 and 9000).
+already run. The API, RTMP ingest and the S3 server are, on `API_PORT`, `RTMP_PORT` and `S3_PORT`
+(3000, 1935 and 9000), bound to `127.0.0.1` only.
 
 MinIO withdrew its public images and binaries, so the S3 service is SeaweedFS, which speaks the
 same API. Any S3-compatible server works: point `S3_ENDPOINT` elsewhere and drop the service.
@@ -54,9 +59,11 @@ same API. Any S3-compatible server works: point `S3_ENDPOINT` elsewhere and drop
 | ---------------------- | -------------------------------------------------------- |
 | `npm run dev`          | Start the API with hot reload (`tsx watch`)              |
 | `npm run dev:worker`   | Start the transcode worker with hot reload               |
+| `npm run dev:live`     | Start the live ingest process (no hot reload)            |
 | `npm run build`        | Compile `src/` to `dist/`                                |
 | `npm start`            | Run the compiled API                                     |
 | `npm run start:worker` | Run the compiled worker                                  |
+| `npm run start:live`   | Run the compiled live ingest process                     |
 | `npm run typecheck`    | `tsc --noEmit`                                           |
 | `npm run lint`         | ESLint (type-aware rules on)                             |
 | `npm run format:check` | Prettier check (`npm run format` to write)               |
@@ -258,11 +265,50 @@ The key is remembered in the browser's local storage for convenience. Deep links
 `/player/?key=<API_KEY>&video=<id>&autoplay=1` connects, loads that video and starts both
 players (the key is moved into local storage and removed from the address bar on load).
 
+## Live ingest (RTMP)
+
+Live ingest is its own process, so restarting or redeploying the API never cuts a stream. Set
+`RTMP_STREAM_KEY` and start it alongside the API and worker:
+
+```sh
+npm run dev:live
+```
+
+It accepts one RTMP stream at a time on `RTMP_LISTEN_PORT` (1935), bound to `HOST`, and refuses
+to start without a key. There is deliberately no hot reload (see Lifecycle below). In OBS, set
+the server to `rtmp://127.0.0.1:1935/live` and the stream key to `RTMP_STREAM_KEY`. With FFmpeg:
+
+```sh
+ffmpeg -re -i clip.mp4 -c:v libx264 -preset veryfast -g 60 -c:a aac \
+  -f flv rtmp://127.0.0.1:1935/live/<RTMP_STREAM_KEY>
+```
+
+For now the stream is received and checked but not yet transcoded or playable. The live process's
+log shows it connect (with codec, resolution and frame rate) and end. Live HLS output is the next
+milestone.
+
+- **One stream at a time.** FFmpeg's own listener does the RTMP work. It accepts a single
+  connection and closes its port, so a second publisher is refused while a stream is live. When
+  the stream ends, a fresh listener takes over. Run one live process only.
+- **Stream key.** FFmpeg only warns about a wrong key or application name and would accept the
+  stream anyway, so the live process drops the connection the moment that warning appears.
+  Neither the real key nor the attempted one is ever logged.
+- **Dead publishers.** A publisher silent for 10 seconds (a dropped network, a stalled encoder) is
+  disconnected, as is a connection that never completes the handshake, so nothing can hold the
+  only slot.
+- **Port trouble.** If the port is taken, the live process retries the listener with backoff (up
+  to 15 seconds), logging the failure once. It exits at startup if FFmpeg cannot run.
+- **Lifecycle.** Ctrl+C or SIGTERM ends any live stream and frees the port. If the process is
+  killed outright (Task Manager, or a hot-reload restart on Windows, which is why `dev:live` has
+  none), its FFmpeg outlives it. To bound that, an idle listener is replaced every 30 seconds, so
+  a leftover gives up within 30 seconds. A live stream is not affected.
+
 ## Layout
 
 ```
 src/api        Fastify app, routes, auth
 src/worker     worker entrypoint, job runner (status bookkeeping), processors
+src/live       live ingest entrypoint (RTMP listener process)
 src/lib        storage, db, queue, transcode, packaging, rtmp, features
 src/config     env schema + loader
 test/unit      pure unit tests

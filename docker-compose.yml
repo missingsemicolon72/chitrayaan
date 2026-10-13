@@ -1,13 +1,15 @@
 # The whole stack for local development: Redis, Postgres, an S3-compatible server, the API and
-# a worker. It runs in cloud mode (S3 + Postgres), which is the pairing these services exist for.
+# a worker, plus live ingest on request. It runs in cloud mode (S3 + Postgres), which is the
+# pairing these services exist for.
 #
-#   docker compose up --build        start everything
+#   docker compose up --build        start everything except live ingest
 #   docker compose logs -f worker    watch a transcode
-#   docker compose down -v           stop and discard the data volumes
+#   RTMP_STREAM_KEY=<key> docker compose --profile live up -d    add live ingest
+#   docker compose --profile live down -v    stop everything and discard the data volumes
 #
-# Nothing here is exposed beyond localhost, and only the API and the S3 console ports are
-# published: Redis and Postgres stay on the compose network so they cannot clash with the ones
-# you may already run on this machine.
+# Nothing here is exposed beyond localhost: the API, RTMP ingest and S3 ports are published on
+# 127.0.0.1 only, and Redis and Postgres stay on the compose network so they cannot clash with
+# the ones you may already run on this machine.
 
 x-app: &app
   image: chitrayaan:local
@@ -28,7 +30,7 @@ x-app: &app
     S3_ENDPOINT: http://s3:9000
     S3_BUCKET: ${S3_BUCKET:-chitrayaan}
     S3_REGION: us-east-1
-    # These must match docker/s3-identities.json.
+    # These must match docker/s3/identities.json.
     S3_ACCESS_KEY: chitrayaan
     S3_SECRET_KEY: chitrayaan-dev-secret
 
@@ -103,11 +105,11 @@ services:
     volumes:
       - s3-data:/data
     ports:
-      - '${S3_PORT:-9000}:9000'
+      - '127.0.0.1:${S3_PORT:-9000}:9000'
 
   api:
     <<: *app
-    # Only this service builds the image; the worker runs the very same one.
+    # Only this service builds the image; the worker and live ingest run the very same one.
     build:
       context: .
     # The S3 image ships no healthcheck tool, so the app waits for it before starting.
@@ -118,7 +120,7 @@ services:
       HOST: 0.0.0.0
       PORT: 3000
     ports:
-      - '${API_PORT:-3000}:3000'
+      - '127.0.0.1:${API_PORT:-3000}:3000'
     healthcheck:
       test:
         [
@@ -139,6 +141,22 @@ services:
     # Transcoding is CPU-bound: raise this to run more videos at once.
     deploy:
       replicas: ${WORKER_REPLICAS:-1}
+
+  # Live RTMP ingest, a process of its own so restarting the API never cuts a stream. It runs
+  # only with the `live` profile and refuses to start without RTMP_STREAM_KEY. One replica only:
+  # it serves the single live stream. No healthcheck, because a TCP probe would use up the
+  # listener's single connection.
+  live:
+    <<: *app
+    profiles: [live]
+    command: ['node', 'dist/live/index.js']
+    environment:
+      <<: *app-env
+      HOST: 0.0.0.0
+      RTMP_LISTEN_PORT: 1935
+      RTMP_STREAM_KEY: ${RTMP_STREAM_KEY:-}
+    ports:
+      - '127.0.0.1:${RTMP_PORT:-1935}:1935'
 
 volumes:
   redis-data:

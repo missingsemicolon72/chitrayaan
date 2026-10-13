@@ -10,9 +10,11 @@
   "scripts": {
     "dev": "tsx watch src/api/server.ts",
     "dev:worker": "tsx watch src/worker/index.ts",
+    "dev:live": "tsx src/live/index.ts",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/api/server.js",
     "start:worker": "node dist/worker/index.js",
+    "start:live": "node dist/live/index.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

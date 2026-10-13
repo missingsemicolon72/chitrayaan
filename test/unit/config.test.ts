@@ -157,6 +157,30 @@ describe('loadConfig', () => {
     });
   });
 
+  it('leaves live ingest off by default and validates the stream key when it is set', () => {
+    expect(loadConfig(MINIMAL).RTMP_STREAM_KEY).toBeUndefined();
+    expect(loadConfig({ ...MINIMAL, RTMP_STREAM_KEY: '' }).RTMP_STREAM_KEY).toBeUndefined();
+    expect(
+      loadConfig({ ...MINIMAL, RTMP_STREAM_KEY: 'obs_live-0123.456~789' }).RTMP_STREAM_KEY,
+    ).toBe('obs_live-0123.456~789');
+
+    expect(issuesOf({ ...MINIMAL, RTMP_STREAM_KEY: 'short' })).toEqual([
+      expect.stringMatching(/^RTMP_STREAM_KEY: .*16/),
+    ]);
+    // It becomes part of the RTMP URL, so URL syntax would break it.
+    expect(issuesOf({ ...MINIMAL, RTMP_STREAM_KEY: 'long-enough-but/has?url&syntax' })).toEqual([
+      expect.stringMatching(/^RTMP_STREAM_KEY: .*letters, digits/),
+    ]);
+  });
+
+  it('refuses an RTMP port that collides with the API port, but only when live ingest is on', () => {
+    const clash = { ...MINIMAL, PORT: '1935', RTMP_LISTEN_PORT: '1935' };
+    expect(loadConfig(clash).PORT).toBe(1935);
+    expect(issuesOf({ ...clash, RTMP_STREAM_KEY: 'a-long-enough-stream-key' })).toEqual([
+      expect.stringMatching(/^RTMP_LISTEN_PORT: .*differ from PORT/),
+    ]);
+  });
+
   it('reports every field-level problem at once with a readable message', () => {
     // Cross-field rules (superRefine) only run once field-level validation passes, so a bad
     // DB_BACKEND value here is reported but its DATABASE_URL requirement is not (yet).

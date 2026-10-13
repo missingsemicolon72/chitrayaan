@@ -133,9 +133,19 @@ export const envSchema = z
     // Upload (decision #14: tus resumable upload)
     TUS_UPLOAD_MAX_SIZE_MB: z.coerce.number().int().positive().default(4096),
 
-    // Live ingest (phase 2)
+    // Live ingest (phase 2) runs as its own process (src/live), which refuses to start without a key.
     RTMP_LISTEN_PORT: port.default(1935),
-    RTMP_STREAM_KEY: z.string().min(1).optional(),
+    RTMP_STREAM_KEY: z
+      .string()
+      .min(
+        16,
+        'RTMP_STREAM_KEY must be at least 16 characters (it is the only check on publishers)',
+      )
+      .regex(
+        /^[A-Za-z0-9._~-]+$/,
+        'RTMP_STREAM_KEY may contain only letters, digits and . _ ~ - (it is part of the RTMP URL)',
+      )
+      .optional(),
 
     // Testing
     TEST_SAMPLES_DIR: z.string().min(1).default('./test/samples'),
@@ -157,6 +167,14 @@ export const envSchema = z
     );
     requireWhen(env.DB_BACKEND === 'postgres', ['DATABASE_URL'], 'DB_BACKEND=postgres');
     requireWhen(env.FEATURE_WATERMARK, ['WATERMARK_IMAGE_PATH'], 'FEATURE_WATERMARK=true');
+
+    if (env.RTMP_STREAM_KEY !== undefined && env.RTMP_LISTEN_PORT === env.PORT) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['RTMP_LISTEN_PORT'],
+        message: 'RTMP_LISTEN_PORT must differ from PORT (the API and the live process share HOST)',
+      });
+    }
   });
 
 export type AppConfig = z.infer<typeof envSchema>;

@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 #
-# One image runs both processes: the API (`node dist/api/server.js`, the default) and the worker
-# (`node dist/worker/index.js`). They share all their code, so shipping one image keeps the two
-# from ever drifting apart.
+# One image runs all three processes: the API (`node dist/api/server.js`, the default), the
+# worker (`node dist/worker/index.js`) and live ingest (`node dist/live/index.js`). They share
+# all their code, so shipping one image keeps them from ever drifting apart.
 
 # Shared base with the toolchain native modules need (better-sqlite3 builds from source when no
 # prebuild matches the platform).
@@ -47,5 +47,5 @@ ENV WORK_DIR=/var/lib/chitrayaan/work \
     LOCAL_STORAGE_PATH=/var/lib/chitrayaan/storage
 
 USER node
-EXPOSE 3000
+EXPOSE 3000 1935
 CMD ["node", "dist/api/server.js"]
