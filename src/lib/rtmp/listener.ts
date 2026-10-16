@@ -6,6 +6,7 @@ import readline from 'node:readline';
 import type { MinimalLogger } from '../logger.js';
 import { parseProgressBlock, TailBuffer } from '../transcode/index.js';
 import { buildListenerArgs, DISCARD_OUTPUT, RTMP_APP } from './args.js';
+import { BEHIND_RATIO, CAUGHT_UP_RATIO, RealtimeMonitor } from './realtime.js';
 import { ListenerOutputParser, redact, type LiveInputInfo, type RejectReason } from './stderr.js';
 
 /**
@@ -66,11 +67,22 @@ export interface RtmpListenerOptions {
   idleTimeoutSeconds?: number;
   /**
    * Seconds each FFmpeg waits for a publisher before a fresh one replaces it. Defaults to 30,
-   * which is also the longest an orphaned FFmpeg can hold the port after the API is killed.
+   * which is also the longest an orphaned FFmpeg can hold the port after its parent is killed.
    */
   rearmSeconds?: number;
-  /** What FFmpeg does with an accepted stream. Defaults to discarding it. */
-  output?: readonly string[];
+  /**
+   * What FFmpeg does with an accepted stream, asked for each new FFmpeg right before it starts.
+   * `sessionId` becomes the id of the session if that FFmpeg accepts a publisher, so the output
+   * can be put where the session will look for it. Defaults to discarding the stream.
+   */
+  output?: (sessionId: string) => ListenerOutput;
+}
+
+export interface ListenerOutput {
+  /** Output arguments: everything after the input. */
+  args: readonly string[];
+  /** FFmpeg's working directory, against which relative output paths resolve. */
+  cwd?: string;
 }
 
 /** A listener that dies sooner than this after starting counts towards backing off. */
@@ -89,6 +101,8 @@ export function retryDelayMs(failures: number): number {
 
 /** What one FFmpeg process saw, from spawn to exit. */
 interface Attempt {
+  /** Becomes the session id if this FFmpeg accepts a publisher. */
+  id: string;
   child: ChildProcess;
   spawnedAt: number;
   session: LiveSession | null;
@@ -100,6 +114,9 @@ interface Attempt {
   stopRequested: boolean;
   stderr: TailBuffer;
   exited: Promise<void>;
+  realtime: RealtimeMonitor;
+  /** The stream was last reported as falling behind real time. */
+  behind: boolean;
 }
 
 /**
@@ -107,7 +124,7 @@ interface Attempt {
  * (decision #8). FFmpeg accepts a single connection per process and closes its listening socket
  * once it has one, so a second publisher is refused while a stream is live; when the stream
  * ends, a fresh FFmpeg is spawned to accept the next one. An idle FFmpeg is also replaced every
- * `rearmSeconds`, so one orphaned by a killed API cannot hold the port for long.
+ * `rearmSeconds`, so one orphaned by a killed live process cannot hold the port for long.
  *
  * FFmpeg does not enforce the stream key or the application name, it only warns about a
  * mismatch, so this class kills the process the moment either warning appears.
@@ -115,7 +132,7 @@ interface Attempt {
 export class RtmpListener extends EventEmitter<RtmpListenerEvents> {
   private readonly idleTimeoutSeconds: number;
   private readonly rearmSeconds: number;
-  private readonly output: readonly string[];
+  private readonly output: (sessionId: string) => ListenerOutput;
   private running = false;
   private state: ListenerState = 'stopped';
   private attempt: Attempt | null = null;
@@ -129,7 +146,7 @@ export class RtmpListener extends EventEmitter<RtmpListenerEvents> {
     super();
     this.idleTimeoutSeconds = options.idleTimeoutSeconds ?? 10;
     this.rearmSeconds = options.rearmSeconds ?? 30;
-    this.output = options.output ?? DISCARD_OUTPUT;
+    this.output = options.output ?? (() => ({ args: DISCARD_OUTPUT }));
   }
 
   /** Start accepting publishers. Does nothing if already started. */
@@ -186,6 +203,15 @@ export class RtmpListener extends EventEmitter<RtmpListenerEvents> {
   private spawnListener(): void {
     this.retryTimer = null;
     const { ffmpegPath, host, port, streamKey } = this.options;
+    const id = randomUUID();
+    let output: ListenerOutput;
+    try {
+      output = this.output(id);
+    } catch (err) {
+      this.lastError = `could not prepare the stream's output: ${(err as Error).message}`;
+      this.rearm(false);
+      return;
+    }
     const child = spawn(
       ffmpegPath,
       buildListenerArgs({
@@ -194,12 +220,13 @@ export class RtmpListener extends EventEmitter<RtmpListenerEvents> {
         streamKey,
         idleTimeoutSeconds: this.idleTimeoutSeconds,
         rearmSeconds: this.rearmSeconds,
-        output: this.output,
+        output: output.args,
       }),
-      { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
+      { cwd: output.cwd, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
     );
     let resolveExited: () => void = () => undefined;
     const attempt: Attempt = {
+      id,
       child,
       spawnedAt: Date.now(),
       session: null,
@@ -211,6 +238,8 @@ export class RtmpListener extends EventEmitter<RtmpListenerEvents> {
       exited: new Promise((resolve) => {
         resolveExited = resolve;
       }),
+      realtime: new RealtimeMonitor(),
+      behind: false,
     };
     this.attempt = attempt;
     this.lastError = null;
@@ -251,6 +280,7 @@ export class RtmpListener extends EventEmitter<RtmpListenerEvents> {
         session.receivedSeconds = parseProgressBlock(progress, undefined).outTimeSeconds;
         const frames = Number(progress.frame);
         if (Number.isFinite(frames)) session.frames = frames;
+        this.checkRealtime(attempt, session);
       }
       progress = {};
     });
@@ -266,7 +296,7 @@ export class RtmpListener extends EventEmitter<RtmpListenerEvents> {
 
   private beginSession(attempt: Attempt, input: LiveInputInfo): void {
     const session: LiveSession = {
-      id: randomUUID(),
+      id: attempt.id,
       startedAt: new Date(),
       input,
       receivedSeconds: 0,
@@ -277,6 +307,23 @@ export class RtmpListener extends EventEmitter<RtmpListenerEvents> {
     this.setState('live');
     this.options.logger.info({ sessionId: session.id, input }, 'RTMP publisher connected');
     this.emit('session-started', { ...session });
+  }
+
+  /** Warn when a stream stops keeping up with real time, and say so when it recovers. */
+  private checkRealtime(attempt: Attempt, session: LiveSession): void {
+    const ratio = attempt.realtime.add(Date.now(), session.receivedSeconds);
+    if (ratio === null) return;
+    const details = { sessionId: session.id, realtime: Number(ratio.toFixed(2)) };
+    if (!attempt.behind && ratio < BEHIND_RATIO) {
+      attempt.behind = true;
+      this.options.logger.warn(
+        details,
+        'live stream is falling behind real time: the publisher cannot send fast enough or this machine cannot encode fast enough',
+      );
+    } else if (attempt.behind && ratio >= CAUGHT_UP_RATIO) {
+      attempt.behind = false;
+      this.options.logger.info(details, 'live stream is keeping up with real time again');
+    }
   }
 
   private onExit(attempt: Attempt, code: number | null): void {
@@ -331,14 +378,22 @@ export class RtmpListener extends EventEmitter<RtmpListenerEvents> {
     }
 
     this.attempt = null;
-    if (!this.running) return;
-
     const failedToListen = attempt.spawnError !== null || (attempt.listenFailed && !rearmed);
-    const healthy =
+    this.rearm(
       attempt.session !== null ||
-      attempt.stopRequested ||
-      rearmed ||
-      (!failedToListen && livedMs >= FAST_EXIT_MS);
+        attempt.stopRequested ||
+        rearmed ||
+        (!failedToListen && livedMs >= FAST_EXIT_MS),
+    );
+  }
+
+  /**
+   * Start the next FFmpeg: at once after a healthy run, with growing delays after consecutive
+   * fast failures. Logs a failure once, however many times it repeats.
+   */
+  private rearm(healthy: boolean): void {
+    if (!this.running) return;
+    const { logger } = this.options;
     this.fastExits = healthy ? 0 : this.fastExits + 1;
 
     if (this.lastError === null) {

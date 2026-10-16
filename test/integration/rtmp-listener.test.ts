@@ -1,5 +1,9 @@
 import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
 import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -429,5 +433,61 @@ describe.skipIf(!FFMPEG)('RtmpListener (FFmpeg RTMP ingest)', () => {
     );
     expect(status.lastError).toMatch(/could not start ffmpeg/);
     expect(status.state).toBe('restarting');
+  });
+
+  it(
+    'names each session with the id its output was prepared for, in the directory it chose',
+    async () => {
+      const dirs: { id: string; cwd: string }[] = [];
+      const scratch = await mkdtemp(path.join(os.tmpdir(), 'chitrayaan-listener-'));
+      cleanups.push(() => rm(scratch, { recursive: true, force: true }));
+      const { listener, events, port } = await startListener({
+        output: (sessionId) => {
+          const cwd = path.join(scratch, sessionId);
+          mkdirSync(cwd);
+          dirs.push({ id: sessionId, cwd });
+          // A relative output path lands in cwd.
+          return { args: ['-c', 'copy', '-f', 'flv', 'received.flv'], cwd };
+        },
+      });
+      await listenerReady(listener);
+      const publisher = startPublisher({ port, streamKey: STREAM_KEY, seconds: 2 });
+      expect((await publisher.done).exitCode).toBe(0);
+      await waitFor(
+        async () => events.ended.length,
+        (n) => n === 1,
+      );
+
+      const session = events.started[0];
+      expect(session?.id).toBe(dirs[0]?.id);
+      expect(existsSync(path.join(dirs[0]?.cwd ?? '', 'received.flv'))).toBe(true);
+      // The next listener was prepared with a fresh id.
+      expect(dirs.length).toBeGreaterThanOrEqual(2);
+      expect(dirs[1]?.id).not.toBe(dirs[0]?.id);
+    },
+    SLOW,
+  );
+
+  it('backs off when the output cannot be prepared, and recovers when it can', async () => {
+    let failing = true;
+    const { listener, logs } = await startListener({
+      output: () => {
+        if (failing) throw new Error('disk full');
+        return { args: DISCARD_OUTPUT };
+      },
+    });
+    const status = await waitFor(
+      async () => listener.status(),
+      (s) => s.state === 'restarting',
+    );
+    expect(status.lastError).toBe("could not prepare the stream's output: disk full");
+
+    failing = false;
+    await waitFor(
+      async () => listener.status(),
+      (s) => s.state === 'listening' && s.lastError === null,
+      { timeoutMs: 20_000 },
+    );
+    expect(logs.filter((line) => line.includes('retrying with backoff'))).toHaveLength(1);
   });
 });

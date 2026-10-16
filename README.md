@@ -263,7 +263,8 @@ that previews the thumbnail sprites. The page and the player libraries are serve
 custom headers to a page load); every manifest and segment request it makes carries the key.
 The key is remembered in the browser's local storage for convenience. Deep links work too:
 `/player/?key=<API_KEY>&video=<id>&autoplay=1` connects, loads that video and starts both
-players (the key is moved into local storage and removed from the address bar on load).
+players (the key is moved into local storage and removed from the address bar on load). Live
+sessions play in the HLS player only (see below).
 
 ## Live ingest (RTMP)
 
@@ -283,10 +284,31 @@ ffmpeg -re -i clip.mp4 -c:v libx264 -preset veryfast -g 60 -c:a aac \
   -f flv rtmp://127.0.0.1:1935/live/<RTMP_STREAM_KEY>
 ```
 
-For now the stream is received and checked but not yet transcoded or playable. The live process's
-log shows it connect (with codec, resolution and frame rate) and end. Live HLS output is the next
-milestone.
+With FFmpeg 8 on Windows, add `-readrate_catchup 2` after `-re`: plain `-re` falls behind real
+time there (a 12 s clip takes about 20 s to send), and the stream with it.
 
+Each stream is transcoded in real time to one rung, 720p H.264/AAC at 2.8 Mbps (smaller sources
+are not upscaled), and published as live HLS. The live process logs the address once the
+playlist is up (`live playlist published`):
+
+```sh
+curl -s -H "X-API-Key: $API_KEY" http://127.0.0.1:3000/api/live/<session id>/live.m3u8
+```
+
+To watch it, paste the session id into the test player's Live box, or open
+`/player/?key=<API_KEY>&live=<session id>&autoplay=1`.
+
+- **Rolling window.** Segments are 2 seconds of CMAF (fragmented MP4), and the playlist lists
+  the latest 6. It goes up once it has 3, because players start three segments behind the live
+  edge, so expect 6 to 8 seconds of latency. A segment that leaves the window is deleted from
+  storage 14 seconds later, once no player can still want it.
+- **End of stream.** The playlist is closed (`#EXT-X-ENDLIST`), even if FFmpeg crashed, and only
+  its last window stays in storage. Removing that too is part of the next milestone.
+- **Storage.** FFmpeg writes into `WORK_DIR/chitrayaan-live/<session id>` and the live process
+  copies each segment to storage (local disk or S3) under `live/<session id>/`. The API serves it
+  from there, so it never needs to reach the live process.
+- **Keeping up.** If a stream runs slower than real time for 10 seconds, the live process logs a
+  warning: either the publisher's upload or this machine's CPU cannot keep up.
 - **One stream at a time.** FFmpeg's own listener does the RTMP work. It accepts a single
   connection and closes its port, so a second publisher is refused while a stream is live. When
   the stream ends, a fresh listener takes over. Run one live process only.

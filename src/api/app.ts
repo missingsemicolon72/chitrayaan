@@ -15,6 +15,7 @@ import { runMaintenance, startMaintenance } from './maintenance.js';
 import { registerApiKeyAuth } from './plugins/auth.js';
 import { healthRoutes } from './routes/health.js';
 import { jobRoutes } from './routes/jobs.js';
+import { liveRoutes } from './routes/live.js';
 import { PLAYER_PREFIX, playerRoutes } from './routes/player.js';
 import { subtitleRoutes } from './routes/subtitles.js';
 import { uploadRoutes } from './routes/uploads.js';
@@ -131,6 +132,7 @@ export async function buildApp(
   await jobRoutes(app);
   await uploadRoutes(app);
   await playerRoutes(app);
+  await liveRoutes(app);
 
   await runMaintenance(app);
   startMaintenance(app);

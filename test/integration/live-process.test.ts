@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,6 +21,8 @@ type LogRecord = Record<string, unknown> & { msg?: string };
 
 interface LiveProcess {
   child: ChildProcess;
+  /** Its working directory; its storage and scratch space live inside it. */
+  cwd: string;
   /** Everything it wrote to stdout and stderr so far. */
   output: () => string;
   /** Its log records so far, parsed from stdout. */
@@ -33,7 +35,8 @@ const scratchDirs: string[] = [];
 
 /**
  * Run the real entrypoint the way `npm run dev:live` does. It runs from an empty directory, so a
- * developer's `.env` cannot leak in, and logs JSON (NODE_ENV=production) so tests can read it.
+ * developer's `.env` cannot leak in, keeps its storage and scratch space there too (its work root
+ * is wiped at startup), and logs JSON (NODE_ENV=production) so tests can read it.
  */
 async function runLive(env: Record<string, string>): Promise<LiveProcess> {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'chitrayaan-live-'));
@@ -47,6 +50,9 @@ async function runLive(env: Record<string, string>): Promise<LiveProcess> {
       API_KEY: 'a-sufficiently-long-test-key',
       HOST: '127.0.0.1',
       FFMPEG_PATH,
+      STORAGE_BACKEND: 'local',
+      LOCAL_STORAGE_PATH: path.join(cwd, 'storage'),
+      WORK_DIR: path.join(cwd, 'work'),
       RTMP_STREAM_KEY: '',
       ...env,
     },
@@ -60,6 +66,7 @@ async function runLive(env: Record<string, string>): Promise<LiveProcess> {
   const exited = new Promise<number | null>((resolve) => child.once('close', resolve));
   const live: LiveProcess = {
     child,
+    cwd,
     output: () => stdout + stderr,
     records: () =>
       stdout
@@ -121,7 +128,7 @@ describe.skipIf(!FFMPEG)('live ingest process (src/live)', () => {
   });
 
   it(
-    'accepts a publisher on RTMP_LISTEN_PORT with RTMP_STREAM_KEY, and frees the port when stopped',
+    'accepts a publisher on RTMP_LISTEN_PORT with RTMP_STREAM_KEY, publishes its live HLS to storage, and frees the port when stopped',
     async () => {
       const port = await freePort();
       const live = await runLive({ RTMP_STREAM_KEY: STREAM_KEY, RTMP_LISTEN_PORT: String(port) });
@@ -140,6 +147,15 @@ describe.skipIf(!FFMPEG)('live ingest process (src/live)', () => {
       expect(ended).toMatchObject({ reason: 'publisher-disconnected' });
       expect(ended.receivedSeconds).toBeGreaterThan(2.5);
       expect((await publisher.done).exitCode).toBe(0);
+      const published = await waitForLog(live, 'live playlist published');
+      expect(published.playlist).toBe(`/api/live/${String(ended.sessionId)}/live.m3u8`);
+      await waitForLog(live, 'live session published in full');
+      const playlist = await readFile(
+        path.join(live.cwd, 'storage', 'live', String(ended.sessionId), 'live.m3u8'),
+        'utf8',
+      );
+      expect(playlist).toContain('#EXT-X-MAP:URI="init.mp4"');
+      expect(playlist).toContain('#EXT-X-ENDLIST');
       expect(live.output()).not.toContain(STREAM_KEY);
 
       const exitCode = await stopLive(live);

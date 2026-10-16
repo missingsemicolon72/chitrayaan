@@ -39,12 +39,32 @@ export async function listenerReady(listener: RtmpListener, graceMs = 750): Prom
   await new Promise((resolve) => setTimeout(resolve, graceMs));
 }
 
+/**
+ * FFmpeg's `-re` falls behind real time on Windows (FFmpeg 8 oversleeps between packets: a 12 s
+ * clip takes ~20 s), which would make every test stream look slow. `-readrate_catchup` lets it
+ * make up the lag; older FFmpeg builds lack the option and go without.
+ */
+const READRATE_CATCHUP: readonly string[] = await new Promise((resolve) => {
+  const probe = spawn(
+    FFMPEG_PATH,
+    [
+      ...['-hide_banner', '-loglevel', 'error', '-re', '-readrate_catchup', '2'],
+      ...['-f', 'lavfi', '-i', 'nullsrc', '-t', '0.01', '-f', 'null', '-'],
+    ],
+    { stdio: 'ignore', windowsHide: true },
+  );
+  probe.once('error', () => resolve([]));
+  probe.once('close', (code) => resolve(code === 0 ? ['-readrate_catchup', '2'] : []));
+});
+
 export interface PublishOptions {
   port: number;
   streamKey: string;
   /** RTMP application; the listener only accepts `live`. */
   app?: string;
   seconds: number;
+  /** Frame size, `WxH`. Defaults to 640x360. */
+  size?: string;
 }
 
 export interface Publisher {
@@ -54,7 +74,8 @@ export interface Publisher {
 }
 
 /**
- * Publish a synthetic 640x360 30 fps H.264 + stereo AAC stream in real time, the way OBS would.
+ * Publish a synthetic 30 fps H.264 + stereo AAC stream (640x360 unless `size` says otherwise) in
+ * real time, the way OBS would.
  */
 export function publish(options: PublishOptions): Publisher {
   const url = `rtmp://127.0.0.1:${options.port}/${options.app ?? 'live'}/${options.streamKey}`;
@@ -66,10 +87,11 @@ export function publish(options: PublishOptions): Publisher {
       '-loglevel',
       'error',
       '-re',
+      ...READRATE_CATCHUP,
       '-f',
       'lavfi',
       '-i',
-      'testsrc2=size=640x360:rate=30',
+      `testsrc2=size=${options.size ?? '640x360'}:rate=30`,
       '-f',
       'lavfi',
       '-i',

@@ -178,6 +178,17 @@ describe('stale work directories', () => {
     ]);
   });
 
+  it("leaves the live process's work root alone, however old", async () => {
+    // A stream running for over a day would otherwise lose its scratch space to a worker restart.
+    const liveRoot = path.join(root, 'chitrayaan-live');
+    await mkdir(path.join(liveRoot, 'session'), { recursive: true });
+    const old = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    await utimes(liveRoot, old, old);
+
+    await sweepStaleWorkDirs(root, silent);
+    expect(await readdir(root)).toContain('chitrayaan-live');
+  });
+
   it('is a no-op when the work root does not exist yet', async () => {
     expect(await sweepStaleWorkDirs(path.join(root, 'not-created'), silent)).toBe(0);
   });

@@ -2,6 +2,7 @@ import { readdir, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { MinimalLogger } from '../lib/logger.js';
+import { LIVE_WORK_DIR_NAME } from '../lib/packaging/index.js';
 
 /** Work directories are named `chitrayaan-<job prefix>-<random>`. */
 const WORK_DIR_PREFIX = 'chitrayaan-';
@@ -29,6 +30,8 @@ export async function sweepStaleWorkDirs(
   let removed = 0;
   for (const entry of entries) {
     if (!entry.isDirectory() || !entry.name.startsWith(WORK_DIR_PREFIX)) continue;
+    // The live process's scratch space shares the work root but is its to manage.
+    if (entry.name === LIVE_WORK_DIR_NAME) continue;
     const dir = path.join(root, entry.name);
     try {
       if ((await stat(dir)).mtimeMs > cutoff) continue;

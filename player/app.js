@@ -27,6 +27,7 @@
     dash: null,
     dashTracks: null,
     pollTimer: null,
+    liveLogged: false,
     statsTimer: null,
     thumbs: { cues: [], baseUrl: '', sprites: new Map() },
   };
@@ -268,6 +269,23 @@
     }
   }
 
+  /** A live session: HLS only, straight from the live playlist (there is no video record). */
+  function loadLive(id) {
+    clearTimeout(state.pollTimer);
+    state.video = null;
+    $('video-details').hidden = true;
+    $('extras').hidden = true;
+    if (state.dash) {
+      state.dash.destroy();
+      state.dash = null;
+    }
+    $('dash-log').textContent = '';
+    $('dash-play').disabled = true;
+    log('dash', 'live sessions are HLS only');
+    setStatus(`Live session ${id}`, 'ok');
+    setupHls(absolute(`/api/live/${encodeURIComponent(id)}/live.m3u8`));
+  }
+
   // ---------- HLS (hls.js) ----------
 
   function setupHls(url) {
@@ -279,6 +297,7 @@
     $('hls-log').textContent = '';
     $('hls-play').disabled = true;
     $('hls-quality').disabled = true;
+    state.liveLogged = false;
 
     if (!window.Hls || !Hls.isSupported()) {
       log('hls', 'hls.js is not supported in this browser (no MediaSource)');
@@ -295,12 +314,11 @@
       select.innerHTML = '';
       select.append(new Option('auto', '-1'));
       data.levels.forEach((level, index) => {
-        select.append(
-          new Option(
-            `${codecFamily(level.videoCodec)} ${level.height}p ${fmtKbps(level.bitrate)}`,
-            String(index),
-          ),
-        );
+        // A live media playlist describes no levels up front; hls.js fills them in later.
+        const label = level.height
+          ? `${codecFamily(level.videoCodec)} ${level.height}p ${fmtKbps(level.bitrate)}`
+          : 'live';
+        select.append(new Option(label, String(index)));
       });
       select.disabled = false;
       $('hls-play').disabled = false;
@@ -309,9 +327,17 @@
         `manifest parsed: ${data.levels.length} level(s), ${data.audioTracks.length} audio track(s)`,
       );
     });
+    hls.on(Hls.Events.LEVEL_LOADED, (_event, data) => {
+      if (data.details.live && !state.liveLogged) {
+        state.liveLogged = true;
+        log('hls', `live playlist: ${data.details.fragments.length} segment(s) in the window`);
+      }
+    });
     hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
       const level = hls.levels[data.level];
-      if (level) {
+      if (level && !level.height) {
+        $('hls-current').textContent = 'live';
+      } else if (level) {
         const family = codecFamily(level.videoCodec);
         $('hls-current').textContent = `${family} ${level.height}p @${fmtKbps(level.bitrate)}`;
         log('hls', `level switched -> ${family} ${level.height}p (${level.videoCodec})`);
@@ -511,12 +537,14 @@
 
   // ---------- wiring ----------
 
-  // Deep links: /player/?key=...&video=<id>&autoplay=1 (the key is moved into local storage
-  // and stripped from the address bar so it does not linger in history).
+  // Deep links: /player/?key=...&video=<id>&autoplay=1, or live=<session id> instead of video
+  // (the key is moved into local storage and stripped from the address bar so it does not
+  // linger in history).
   const params = new URLSearchParams(window.location.search);
   if (params.get('key')) store.set('chitrayaan.apiKey', params.get('key'));
   if (params.get('base')) store.set('chitrayaan.apiBase', params.get('base'));
   const deepLinkVideo = params.get('video');
+  const deepLinkLive = params.get('live');
   const autoplay = params.get('autoplay') === '1';
   if (params.has('key')) {
     params.delete('key');
@@ -540,6 +568,11 @@
   $('refresh').addEventListener('click', () => {
     if (state.video) loadVideo(state.video.id);
   });
+  $('live-load').addEventListener('click', () => {
+    const id = $('live-id').value.trim();
+    if (id) loadLive(id);
+    else setStatus('Paste a live session id', 'warn');
+  });
   $('video-list').addEventListener('change', (event) => {
     $('video-id').value = '';
     if (event.target.value) loadVideo(event.target.value);
@@ -547,6 +580,10 @@
 
   if (apiKey()) {
     connect().then(() => {
+      if (deepLinkLive) {
+        $('live-id').value = deepLinkLive;
+        return loadLive(deepLinkLive);
+      }
       if (deepLinkVideo) {
         $('video-id').value = deepLinkVideo;
         return loadVideo(deepLinkVideo);

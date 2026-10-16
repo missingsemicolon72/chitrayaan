@@ -2,9 +2,9 @@
 export const RTMP_APP = 'live';
 
 /**
- * What FFmpeg does with an accepted stream until live transcoding exists: demux it and throw the
- * packets away. That proves the stream arrives intact and keeps the progress counters honest
- * without producing anything.
+ * What FFmpeg does with an accepted stream when the caller asks for nothing else: demux it and
+ * throw the packets away. That proves the stream arrives intact and keeps the progress counters
+ * honest without producing anything.
  */
 export const DISCARD_OUTPUT: readonly string[] = ['-c', 'copy', '-f', 'null', '-'];
 

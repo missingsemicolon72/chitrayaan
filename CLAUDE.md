@@ -51,6 +51,7 @@ anything has drifted, say so before continuing rather than proceeding on a stale
 | 18 | Communication style | Every message to the owner must be concise *and* clear — not so terse that meaning is lost, not so verbose that budget gets burned restating things | Balances misinterpretation risk against token cost |
 | 19 | Version control | Fable never takes a Git action that changes state (init, add, commit, push, branch, merge, tag, etc.) on its own. Read-only commands (status, fetch, pull, log, diff) are fine to run freely. For anything else: stop, ping the owner with a short reason and the exact command(s) to run, and wait. | Owner wants to stay in control of what enters version control and when |
 | 20 | Stop/resume protocol | See "Working with the project owner" below | Owner needs to pause a long-running session cleanly and resume without losing or misreading state |
+| 21 | Live ingest process | Live ingest runs as **its own process** (`src/live`, `npm run dev:live`, compose service `live`), separate from the API and the worker. Decided at the end of Milestone 13, replacing the first build's placement inside the API process | Restarting or redeploying the API never cuts a live stream, a live-ingest fault never takes the API down, and live ingest stays a distinct component of the architecture. Accepted cost: the phase 2 lifecycle API (Milestone 15) needs a control/status channel to the live process |
 
 ## Explicitly out of scope (non-goals)
 
@@ -79,13 +80,17 @@ flowchart LR
     FF --> STORE
     W --> DB
 
-    RTMPPUB[RTMP publisher e.g. OBS] -->|publish| LIVE[FFmpeg RTMP listener]
-    LIVE -->|live segments| STORE
+    RTMPPUB[RTMP publisher e.g. OBS] -->|publish| LIVE[Live process]
+    LIVE -->|spawns| LFF[FFmpeg RTMP listener]
+    LFF -->|live segments| STORE
     LIVE --> DB
 
     PLAYER[Test player: hls.js + dash.js] -->|GET manifest/segments| API
     API --> STORE
 ```
+
+The API, the worker and the live process are three separate processes (decision #21). Live ingest
+never runs inside the API.
 
 All endpoints except `/healthz` require an `X-API-Key` header matching the configured `API_KEY`.
 
@@ -95,6 +100,7 @@ All endpoints except `/healthz` require an `X-API-Key` header matching the confi
 /src
   /api            Fastify app, routes, auth middleware
   /worker         BullMQ worker entrypoint, transcode job processor
+  /live           Live ingest process entrypoint: runs the RTMP listener (phase 2, decision #21)
   /lib
     /storage      Storage interface + local-disk and S3 drivers
     /db           DB interface + SQLite and Postgres drivers
@@ -138,7 +144,7 @@ CLAUDE.md
 | `WATERMARK_IMAGE_PATH`, `WATERMARK_POSITION`, `WATERMARK_OPACITY` | — | Used when watermark feature is on |
 | `TUS_UPLOAD_MAX_SIZE_MB` | int | Upload size cap |
 | `RTMP_LISTEN_PORT` | e.g. `1935` | Phase 2 |
-| `RTMP_STREAM_KEY` | shared secret string | Phase 2 — single-stream MVP, one key |
+| `RTMP_STREAM_KEY` | shared secret string | Phase 2 — single-stream MVP, one key; the live process refuses to start without it |
 | `TEST_SAMPLES_DIR` | path, default `./test/samples` | Where your real sample clips live |
 
 ## ABR ladder defaults `[default, adjustable]`
@@ -198,7 +204,7 @@ wait for explicit go-ahead before starting the next one.** Do not batch mileston
 
 ### Phase 2 — Live ingest (reduced scope, secondary)
 
-13. **FFmpeg RTMP listener** — accept a single incoming stream on `RTMP_LISTEN_PORT`.
+13. **FFmpeg RTMP listener** — accept a single incoming stream on `RTMP_LISTEN_PORT`, in its own process (decision #21).
 14. **Live transcode + rolling HLS** — one quality rung, real-time, sliding-window live playlist.
 15. **Live session lifecycle** — start/stop/status API, segment cleanup after the stream ends.
 

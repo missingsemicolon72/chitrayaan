@@ -144,12 +144,13 @@ services:
 
   # Live RTMP ingest, a process of its own so restarting the API never cuts a stream. It runs
   # only with the `live` profile and refuses to start without RTMP_STREAM_KEY. One replica only:
-  # it serves the single live stream. No healthcheck, because a TCP probe would use up the
-  # listener's single connection.
+  # it serves the single live stream. It publishes live HLS to S3, which the API serves. No
+  # healthcheck, because a TCP probe would use up the listener's single connection.
   live:
     <<: *app
     profiles: [live]
-    command: ['node', 'dist/live/index.js']
+    command:
+      ['node', 'docker/wait-for-http.mjs', 'http://s3:9000', '--', 'node', 'dist/live/index.js']
     environment:
       <<: *app-env
       HOST: 0.0.0.0
