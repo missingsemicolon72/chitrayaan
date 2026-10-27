@@ -77,18 +77,20 @@
     </section>
 
     <section class="panel" id="live-select">
-      <h2>Live <span class="muted">HLS only; the live process logs each session's id</span></h2>
+      <h2>Live <span class="muted">HLS only; one stream at a time</span></h2>
       <div class="row">
+        <button id="live-start" type="button">Start stream</button>
         <label>
-          live session id
+          live stream id
           <input
             id="live-id"
             type="text"
-            placeholder="paste a live session id"
+            placeholder="start a stream, or paste a live stream id"
             spellcheck="false"
           />
         </label>
         <button id="live-load" type="button">Watch live</button>
+        <button id="live-stop" type="button" class="secondary">Stop stream</button>
       </div>
     </section>
 

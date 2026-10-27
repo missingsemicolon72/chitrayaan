@@ -144,8 +144,9 @@ services:
 
   # Live RTMP ingest, a process of its own so restarting the API never cuts a stream. It runs
   # only with the `live` profile and refuses to start without RTMP_STREAM_KEY. One replica only:
-  # it serves the single live stream. It publishes live HLS to S3, which the API serves. No
-  # healthcheck, because a TCP probe would use up the listener's single connection.
+  # it serves the single live stream. Streams are started and stopped through the API, which
+  # records them in Postgres for this service to pick up; it publishes live HLS to S3, which the
+  # API serves. No healthcheck, because a TCP probe would use up the listener's single connection.
   live:
     <<: *app
     profiles: [live]
@@ -156,6 +157,7 @@ services:
       HOST: 0.0.0.0
       RTMP_LISTEN_PORT: 1935
       RTMP_STREAM_KEY: ${RTMP_STREAM_KEY:-}
+      LIVE_CLEANUP_DELAY_SECONDS: ${LIVE_CLEANUP_DELAY_SECONDS:-60}
     ports:
       - '127.0.0.1:${RTMP_PORT:-1935}:1935'
 

@@ -150,6 +150,72 @@ export interface NewSubtitle {
   sizeBytes: number;
 }
 
+/**
+ * - `waiting`: created; the live process listens for its publisher.
+ * - `live`: a publisher is connected and the playlist is being published.
+ * - `ended`: over; its last segments stay in storage until `cleanupAfter`.
+ */
+export const LIVE_STREAM_STATUSES = ['waiting', 'live', 'ended'] as const;
+export type LiveStreamStatus = (typeof LIVE_STREAM_STATUSES)[number];
+
+/**
+ * - `publisher-disconnected`: the publisher stopped or went silent.
+ * - `stopped`: stopped through the API.
+ * - `failed`: FFmpeg failed mid-stream.
+ * - `interrupted`: the live process shut down or died while the stream was live.
+ */
+export const LIVE_END_REASONS = [
+  'publisher-disconnected',
+  'stopped',
+  'failed',
+  'interrupted',
+] as const;
+export type LiveEndReason = (typeof LIVE_END_REASONS)[number];
+
+/**
+ * A live stream (phase 2): one publish of the single RTMP stream, from creation through the
+ * deletion of its files. The API creates and stops streams; the live process (decision #21)
+ * serves them and records what happens, so this record is how the two talk.
+ */
+export interface LiveStream {
+  id: string;
+  status: LiveStreamStatus;
+  endReason: LiveEndReason | null;
+  /** When a stop was asked for through the API. */
+  stopRequestedAt: string | null;
+  createdAt: string;
+  /** When the publisher connected. */
+  startedAt: string | null;
+  endedAt: string | null;
+  /** When its files in storage are due to be deleted, and when they were. */
+  cleanupAfter: string | null;
+  cleanedAt: string | null;
+  updatedAt: string;
+}
+
+export interface LiveStreamListOptions extends ListOptions {
+  status?: LiveStreamStatus;
+}
+
+export interface LiveStreamEnd {
+  reason: LiveEndReason;
+  /** ISO 8601 UTC. */
+  cleanupAfter: string;
+}
+
+/** What the live process last reported about itself. */
+export interface LiveIngestReport {
+  /** `idle`, `listening`, `live`, `restarting`, `ending`, or `offline` after a clean shutdown. */
+  state: string;
+  /** Why the RTMP listener cannot listen, while that is the case. */
+  error: string | null;
+}
+
+export interface LiveIngestStatus extends LiveIngestReport {
+  /** When the live process last reported; it reports every few seconds while running. */
+  reportedAt: string;
+}
+
 export interface Page<T> {
   items: T[];
   total: number;
@@ -211,6 +277,39 @@ export interface SubtitleRepository {
   delete(videoId: string, language: string): Promise<boolean>;
 }
 
+/**
+ * Live streams, newest first. At most one is `waiting` or `live` at a time (CLAUDE.md non-goals:
+ * one concurrent live stream); the database enforces that, not just the API.
+ *
+ * State changes are conditional, so the API and the live process can race without overwriting
+ * each other: each returns null when the stream was not in a state the change applies to.
+ */
+export interface LiveStreamRepository {
+  /** A new `waiting` stream. Rejects with `ActiveLiveStreamError` while another is active. */
+  create(): Promise<LiveStream>;
+  get(id: string): Promise<LiveStream | null>;
+  /** The `waiting` or `live` stream, if there is one. */
+  getActive(): Promise<LiveStream | null>;
+  list(options?: LiveStreamListOptions): Promise<Page<LiveStream>>;
+  /** `waiting` -> `live`. */
+  markLive(id: string): Promise<LiveStream | null>;
+  /** Record a stop request on a `waiting` or `live` stream. */
+  requestStop(id: string): Promise<LiveStream | null>;
+  /** `waiting` or `live` -> `ended`. */
+  end(id: string, end: LiveStreamEnd): Promise<LiveStream | null>;
+  /** Ended streams whose files are due for deletion at `now` and not yet deleted. */
+  listCleanupDue(now: string): Promise<LiveStream[]>;
+  /** Record that an ended stream's files are gone. */
+  markCleaned(id: string): Promise<LiveStream | null>;
+  delete(id: string): Promise<boolean>;
+}
+
+/** The live process's own state, reported every few seconds; doubles as its heartbeat. */
+export interface LiveIngestRepository {
+  report(report: LiveIngestReport): Promise<void>;
+  get(): Promise<LiveIngestStatus | null>;
+}
+
 /** Metadata database abstraction (decision #7: SQLite for local mode, Postgres for cloud mode). */
 export interface Database {
   readonly backend: DbBackend;
@@ -218,6 +317,8 @@ export interface Database {
   readonly jobs: JobRepository;
   readonly renditions: RenditionRepository;
   readonly subtitles: SubtitleRepository;
+  readonly liveStreams: LiveStreamRepository;
+  readonly liveIngest: LiveIngestRepository;
   /** Apply any pending schema migrations. Safe to call on every startup. */
   migrate(): Promise<void>;
   /** Cheap round-trip used by `/healthz`. Rejects if the database is unreachable. */
@@ -229,6 +330,14 @@ export class DbError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = 'DbError';
+  }
+}
+
+/** Only one live stream may be waiting or live at a time. */
+export class ActiveLiveStreamError extends DbError {
+  constructor(public readonly active: LiveStream) {
+    super(`live stream ${active.id} is already ${active.status}`);
+    this.name = 'ActiveLiveStreamError';
   }
 }
 

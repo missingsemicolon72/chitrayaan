@@ -7,11 +7,13 @@ import { migrationProvider } from './migrations.js';
 import type {
   DatabaseSchema,
   JobsTable,
+  LiveStreamsTable,
   RenditionsTable,
   SubtitlesTable,
   VideosTable,
 } from './schema.js';
 import {
+  ActiveLiveStreamError,
   DbError,
   RecordNotFoundError,
   type Database,
@@ -20,6 +22,14 @@ import {
   type JobListOptions,
   type JobPatch,
   type JobRepository,
+  type LiveIngestReport,
+  type LiveIngestRepository,
+  type LiveIngestStatus,
+  type LiveStream,
+  type LiveStreamEnd,
+  type LiveStreamListOptions,
+  type LiveStreamRepository,
+  type LiveStreamStatus,
   type NewJob,
   type NewRendition,
   type NewSubtitle,
@@ -356,12 +366,193 @@ class KyselySubtitleRepository implements SubtitleRepository {
   }
 }
 
+function toLiveStream(row: LiveStreamsTable): LiveStream {
+  return {
+    id: row.id,
+    status: row.status,
+    endReason: row.endReason,
+    stopRequestedAt: row.stopRequestedAt,
+    createdAt: row.createdAt,
+    startedAt: row.startedAt,
+    endedAt: row.endedAt,
+    cleanupAfter: row.cleanupAfter,
+    cleanedAt: row.cleanedAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+class KyselyLiveStreamRepository implements LiveStreamRepository {
+  constructor(private readonly db: Kysely<DatabaseSchema>) {}
+
+  async create(): Promise<LiveStream> {
+    const now = nowIso();
+    const row: LiveStreamsTable = {
+      id: randomUUID(),
+      status: 'waiting',
+      active: 1,
+      endReason: null,
+      stopRequestedAt: null,
+      createdAt: now,
+      startedAt: null,
+      endedAt: null,
+      cleanupAfter: null,
+      cleanedAt: null,
+      updatedAt: now,
+    };
+    try {
+      await this.db.insertInto('liveStreams').values(row).execute();
+    } catch (err) {
+      // The unique `active` column refused it, unless something else went wrong.
+      const active = await this.getActive();
+      if (active) throw new ActiveLiveStreamError(active);
+      throw err;
+    }
+    return toLiveStream(row);
+  }
+
+  async get(id: string): Promise<LiveStream | null> {
+    const row = await this.db
+      .selectFrom('liveStreams')
+      .selectAll()
+      .where('id', '=', id)
+      .executeTakeFirst();
+    return row ? toLiveStream(row) : null;
+  }
+
+  async getActive(): Promise<LiveStream | null> {
+    const row = await this.db
+      .selectFrom('liveStreams')
+      .selectAll()
+      .where('active', '=', 1)
+      .executeTakeFirst();
+    return row ? toLiveStream(row) : null;
+  }
+
+  async list(options: LiveStreamListOptions = {}): Promise<Page<LiveStream>> {
+    const { limit, offset } = clampPage(options.limit, options.offset);
+    let query = this.db.selectFrom('liveStreams');
+    if (options.status) query = query.where('status', '=', options.status);
+
+    const [rows, count] = await Promise.all([
+      query
+        .selectAll()
+        .orderBy('createdAt', 'desc')
+        .orderBy('id', 'desc')
+        .limit(limit)
+        .offset(offset)
+        .execute(),
+      query.select((eb) => eb.fn.countAll<number>().as('count')).executeTakeFirstOrThrow(),
+    ]);
+    return { items: rows.map(toLiveStream), total: Number(count.count), limit, offset };
+  }
+
+  markLive(id: string): Promise<LiveStream | null> {
+    return this.transition(id, ['waiting'], { status: 'live', startedAt: nowIso() });
+  }
+
+  async requestStop(id: string): Promise<LiveStream | null> {
+    const now = nowIso();
+    // A repeated request keeps the first one's time.
+    await this.db
+      .updateTable('liveStreams')
+      .set({ stopRequestedAt: now, updatedAt: now })
+      .where('id', '=', id)
+      .where('active', '=', 1)
+      .where('stopRequestedAt', 'is', null)
+      .execute();
+    const stream = await this.get(id);
+    return stream && stream.status !== 'ended' ? stream : null;
+  }
+
+  end(id: string, end: LiveStreamEnd): Promise<LiveStream | null> {
+    return this.transition(id, ['waiting', 'live'], {
+      status: 'ended',
+      active: null,
+      endReason: end.reason,
+      endedAt: nowIso(),
+      cleanupAfter: end.cleanupAfter,
+    });
+  }
+
+  async listCleanupDue(now: string): Promise<LiveStream[]> {
+    // ISO 8601 UTC strings in one fixed format sort as text in time order.
+    const rows = await this.db
+      .selectFrom('liveStreams')
+      .selectAll()
+      .where('status', '=', 'ended')
+      .where('cleanedAt', 'is', null)
+      .where('cleanupAfter', '<=', now)
+      .orderBy('cleanupAfter', 'asc')
+      .execute();
+    return rows.map(toLiveStream);
+  }
+
+  async markCleaned(id: string): Promise<LiveStream | null> {
+    const now = nowIso();
+    const result = await this.db
+      .updateTable('liveStreams')
+      .set({ cleanedAt: now, updatedAt: now })
+      .where('id', '=', id)
+      .where('status', '=', 'ended')
+      .where('cleanedAt', 'is', null)
+      .executeTakeFirst();
+    return result.numUpdatedRows > 0n ? this.get(id) : null;
+  }
+
+  async delete(id: string): Promise<boolean> {
+    const result = await this.db.deleteFrom('liveStreams').where('id', '=', id).executeTakeFirst();
+    return result.numDeletedRows > 0n;
+  }
+
+  /** Apply `changes` only if the stream is in one of the `from` states. */
+  private async transition(
+    id: string,
+    from: LiveStreamStatus[],
+    changes: Partial<Omit<LiveStreamsTable, 'id' | 'createdAt' | 'updatedAt'>>,
+  ): Promise<LiveStream | null> {
+    const result = await this.db
+      .updateTable('liveStreams')
+      .set({ ...changes, updatedAt: nowIso() })
+      .where('id', '=', id)
+      .where('status', 'in', from)
+      .executeTakeFirst();
+    return result.numUpdatedRows > 0n ? this.get(id) : null;
+  }
+}
+
+/** The single row the live process reports into. */
+const LIVE_INGEST_ROW = 'live';
+
+class KyselyLiveIngestRepository implements LiveIngestRepository {
+  constructor(private readonly db: Kysely<DatabaseSchema>) {}
+
+  async report(report: LiveIngestReport): Promise<void> {
+    const values = { state: report.state, error: report.error, reportedAt: nowIso() };
+    await this.db
+      .insertInto('liveIngest')
+      .values({ id: LIVE_INGEST_ROW, ...values })
+      .onConflict((oc) => oc.column('id').doUpdateSet(values))
+      .execute();
+  }
+
+  async get(): Promise<LiveIngestStatus | null> {
+    const row = await this.db
+      .selectFrom('liveIngest')
+      .select(['state', 'error', 'reportedAt'])
+      .where('id', '=', LIVE_INGEST_ROW)
+      .executeTakeFirst();
+    return row ?? null;
+  }
+}
+
 /** `Database` implementation shared by every backend; only the Kysely dialect differs. */
 export class KyselyDatabase implements Database {
   readonly videos: VideoRepository;
   readonly jobs: JobRepository;
   readonly renditions: RenditionRepository;
   readonly subtitles: SubtitleRepository;
+  readonly liveStreams: LiveStreamRepository;
+  readonly liveIngest: LiveIngestRepository;
 
   constructor(
     readonly backend: DbBackend,
@@ -371,6 +562,8 @@ export class KyselyDatabase implements Database {
     this.jobs = new KyselyJobRepository(db);
     this.renditions = new KyselyRenditionRepository(db);
     this.subtitles = new KyselySubtitleRepository(db);
+    this.liveStreams = new KyselyLiveStreamRepository(db);
+    this.liveIngest = new KyselyLiveIngestRepository(db);
   }
 
   async migrate(): Promise<void> {

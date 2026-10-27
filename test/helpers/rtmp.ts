@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 
-import type { RtmpListener } from '../../src/lib/rtmp/index.js';
 import { FFMPEG_PATH } from './ffmpeg.js';
 import { waitFor } from './wait.js';
 
@@ -27,11 +26,15 @@ export function portInUse(port: number): Promise<boolean> {
 }
 
 /**
- * Wait until the listener has spawned FFmpeg and FFmpeg has had time to bind. FFmpeg prints
- * nothing when it starts listening, and probing the port would use up its single accept, so
- * this allows a fixed grace period after the state change instead.
+ * Wait until the listener (an RtmpListener, or the LiveIngest running one) has spawned FFmpeg
+ * and FFmpeg has had time to bind. FFmpeg prints nothing when it starts listening, and probing
+ * the port would use up its single accept, so this allows a fixed grace period after the state
+ * change instead.
  */
-export async function listenerReady(listener: RtmpListener, graceMs = 750): Promise<void> {
+export async function listenerReady(
+  listener: { status(): { state: string } },
+  graceMs = 750,
+): Promise<void> {
   await waitFor(
     async () => listener.status().state,
     (state) => state === 'listening',

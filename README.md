@@ -264,20 +264,29 @@ custom headers to a page load); every manifest and segment request it makes carr
 The key is remembered in the browser's local storage for convenience. Deep links work too:
 `/player/?key=<API_KEY>&video=<id>&autoplay=1` connects, loads that video and starts both
 players (the key is moved into local storage and removed from the address bar on load). Live
-sessions play in the HLS player only (see below).
+streams play in the HLS player only (see below).
 
 ## Live ingest (RTMP)
 
 Live ingest is its own process, so restarting or redeploying the API never cuts a stream. Set
-`RTMP_STREAM_KEY` and start it alongside the API and worker:
+`RTMP_STREAM_KEY` and start it alongside the API and worker; it shares their database and
+storage:
 
 ```sh
 npm run dev:live
 ```
 
-It accepts one RTMP stream at a time on `RTMP_LISTEN_PORT` (1935), bound to `HOST`, and refuses
-to start without a key. There is deliberately no hot reload (see Lifecycle below). In OBS, set
-the server to `rtmp://127.0.0.1:1935/live` and the stream key to `RTMP_STREAM_KEY`. With FFmpeg:
+It refuses to start without a key. There is deliberately no hot reload (see Restarts below).
+
+Start a stream through the API. The live process then listens on `RTMP_LISTEN_PORT` (1935),
+bound to `HOST`, for that stream's publisher:
+
+```sh
+curl -s -X POST -H "X-API-Key: $API_KEY" http://127.0.0.1:3000/api/live/streams
+```
+
+The answer gives the stream's `id`, its `status` (`waiting`) and its `playlist`. In OBS, set the
+server to `rtmp://127.0.0.1:1935/live` and the stream key to `RTMP_STREAM_KEY`. With FFmpeg:
 
 ```sh
 ffmpeg -re -i clip.mp4 -c:v libx264 -preset veryfast -g 60 -c:a aac \
@@ -287,31 +296,52 @@ ffmpeg -re -i clip.mp4 -c:v libx264 -preset veryfast -g 60 -c:a aac \
 With FFmpeg 8 on Windows, add `-readrate_catchup 2` after `-re`: plain `-re` falls behind real
 time there (a 12 s clip takes about 20 s to send), and the stream with it.
 
-Each stream is transcoded in real time to one rung, 720p H.264/AAC at 2.8 Mbps (smaller sources
-are not upscaled), and published as live HLS. The live process logs the address once the
-playlist is up (`live playlist published`):
+Once the publisher connects, the stream is `live`. It is transcoded in real time to one rung,
+720p H.264/AAC at 2.8 Mbps (smaller sources are not upscaled), and published as live HLS at its
+`playlist`, `/api/live/<id>/live.m3u8`. To watch it, use the test player's Live box (which can
+also start and stop streams), or open `/player/?key=<API_KEY>&live=<id>&autoplay=1`.
+
+The stream ends when its publisher stops, or when you stop it:
 
 ```sh
-curl -s -H "X-API-Key: $API_KEY" http://127.0.0.1:3000/api/live/<session id>/live.m3u8
+curl -s -X DELETE -H "X-API-Key: $API_KEY" http://127.0.0.1:3000/api/live/streams/<id>
 ```
 
-To watch it, paste the session id into the test player's Live box, or open
-`/player/?key=<API_KEY>&live=<session id>&autoplay=1`.
+| Endpoint                       | What it does                                                                                        |
+| ------------------------------ | --------------------------------------------------------------------------------------------------- |
+| `POST /api/live/streams`       | Start a stream. 409 while another is waiting or live, 503 while live ingest is not running          |
+| `GET /api/live/streams/:id`    | The stream, plus whether live ingest is running and what it is doing (`ingest`)                     |
+| `GET /api/live/streams`        | Streams, newest first (`status`, `limit`, `offset`)                                                 |
+| `DELETE /api/live/streams/:id` | Stop it: cuts off the publisher and closes the playlist. 202 if live ingest has not done so in 10 s |
+| `GET /api/live/:id/live.m3u8`  | The live playlist, and the segments it lists                                                        |
+
+A stream goes `waiting`, `live`, `ended`, and records why it ended (`endReason`):
+`publisher-disconnected`, `stopped` (through the API), `failed` (FFmpeg failed) or
+`interrupted` (the live process stopped or died mid-stream). `LIVE_CLEANUP_DELAY_SECONDS` (60)
+after it ends, its files are deleted from storage, `cleanedAt` is set and `playlist` becomes null.
 
 - **Rolling window.** Segments are 2 seconds of CMAF (fragmented MP4), and the playlist lists
   the latest 6. It goes up once it has 3, because players start three segments behind the live
   edge, so expect 6 to 8 seconds of latency. A segment that leaves the window is deleted from
   storage 14 seconds later, once no player can still want it.
-- **End of stream.** The playlist is closed (`#EXT-X-ENDLIST`), even if FFmpeg crashed, and only
-  its last window stays in storage. Removing that too is part of the next milestone.
-- **Storage.** FFmpeg writes into `WORK_DIR/chitrayaan-live/<session id>` and the live process
-  copies each segment to storage (local disk or S3) under `live/<session id>/`. The API serves it
-  from there, so it never needs to reach the live process.
+- **End of stream.** The playlist is closed (`#EXT-X-ENDLIST`), even if FFmpeg crashed or the
+  live process died, and only its last window stays in storage until the cleanup delay is up, so
+  viewers can play to the end.
+- **One publish per stream.** When the publisher disconnects, the stream is over and the RTMP
+  port closes; to go live again, start a new stream. An encoder that reconnects by itself (OBS
+  does after a network drop) is refused, and the new stream gets a new id and playlist.
+- **One stream at a time.** The database allows a single waiting or live stream. FFmpeg's own
+  listener does the RTMP work: it accepts one connection and closes its port, so a second
+  publisher is refused while a stream is live. Run one live process only.
+- **API and live process.** They talk only through the database: the API records streams and
+  stop requests, the live process checks for them every second, records what happens, and
+  reports its own state every 5 seconds (`ingest` in the API's answers). After 15 seconds without
+  a report, the API treats live ingest as not running.
+- **Storage.** FFmpeg writes into `WORK_DIR/chitrayaan-live/<stream id>` and the live process
+  copies each segment to storage (local disk or S3) under `live/<stream id>/`. The API serves it
+  from there.
 - **Keeping up.** If a stream runs slower than real time for 10 seconds, the live process logs a
   warning: either the publisher's upload or this machine's CPU cannot keep up.
-- **One stream at a time.** FFmpeg's own listener does the RTMP work. It accepts a single
-  connection and closes its port, so a second publisher is refused while a stream is live. When
-  the stream ends, a fresh listener takes over. Run one live process only.
 - **Stream key.** FFmpeg only warns about a wrong key or application name and would accept the
   stream anyway, so the live process drops the connection the moment that warning appears.
   Neither the real key nor the attempted one is ever logged.
@@ -319,18 +349,21 @@ To watch it, paste the session id into the test player's Live box, or open
   disconnected, as is a connection that never completes the handshake, so nothing can hold the
   only slot.
 - **Port trouble.** If the port is taken, the live process retries the listener with backoff (up
-  to 15 seconds), logging the failure once. It exits at startup if FFmpeg cannot run.
-- **Lifecycle.** Ctrl+C or SIGTERM ends any live stream and frees the port. If the process is
-  killed outright (Task Manager, or a hot-reload restart on Windows, which is why `dev:live` has
-  none), its FFmpeg outlives it. To bound that, an idle listener is replaced every 30 seconds, so
-  a leftover gives up within 30 seconds. A live stream is not affected.
+  to 15 seconds), logging the failure once and reporting it as `ingest.error`. It exits at
+  startup if FFmpeg cannot run.
+- **Restarts.** Ctrl+C or SIGTERM ends a live stream as `interrupted` and frees the port; a
+  waiting stream stays waiting and the next run listens for it again. If the process is killed
+  outright, the next run ends its stream as `interrupted` and closes the playlist, and deletes
+  any live files no stream accounts for. A process killed outright (Task Manager, or a
+  hot-reload restart on Windows, which is why `dev:live` has none) leaves its FFmpeg behind; an
+  idle listener is replaced every 30 seconds, so a leftover gives up within 30 seconds.
 
 ## Layout
 
 ```
 src/api        Fastify app, routes, auth
 src/worker     worker entrypoint, job runner (status bookkeeping), processors
-src/live       live ingest entrypoint (RTMP listener process)
+src/live       live ingest process: entrypoint, stream controller, RTMP ingest, storage mirror
 src/lib        storage, db, queue, transcode, packaging, rtmp, features
 src/config     env schema + loader
 test/unit      pure unit tests

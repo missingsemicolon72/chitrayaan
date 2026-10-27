@@ -86,7 +86,7 @@ describe('live playlists', () => {
     expect(withEndList(ended)).toBe(ended);
   });
 
-  it('accepts only the names a live session publishes', () => {
+  it('accepts only the names a live stream publishes', () => {
     for (const name of ['live.m3u8', 'init.mp4', 'seg_00000.m4s', 'seg_123456.m4s']) {
       expect(isLiveFileName(name), name).toBe(true);
     }

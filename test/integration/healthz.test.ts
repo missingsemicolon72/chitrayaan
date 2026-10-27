@@ -53,6 +53,8 @@ describe('GET /healthz', () => {
       jobs: t.app.db.jobs,
       renditions: t.app.db.renditions,
       subtitles: t.app.db.subtitles,
+      liveStreams: t.app.db.liveStreams,
+      liveIngest: t.app.db.liveIngest,
       migrate: () => Promise.resolve(),
       ping: () => Promise.reject(new Error('database is down')),
       close: () => Promise.resolve(),

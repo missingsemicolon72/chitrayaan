@@ -14,12 +14,20 @@ function connect(): Promise<Database> {
   });
 }
 
-/** Videos cascade to jobs, renditions and subtitles, so this empties the whole schema. */
+/**
+ * Videos cascade to jobs, renditions and subtitles; live streams stand alone. This empties every
+ * table but the live process's single report row, which each test overwrites.
+ */
 async function clear(db: Database): Promise<void> {
   for (;;) {
     const page = await db.videos.list({ limit: 200 });
-    if (page.items.length === 0) return;
+    if (page.items.length === 0) break;
     for (const video of page.items) await db.videos.delete(video.id);
+  }
+  for (;;) {
+    const page = await db.liveStreams.list({ limit: 200 });
+    if (page.items.length === 0) break;
+    for (const stream of page.items) await db.liveStreams.delete(stream.id);
   }
 }
 

@@ -42,6 +42,12 @@
     return res.json();
   }
 
+  /** Like `api`, but for any method, and an error answer is returned rather than thrown. */
+  async function apiCall(method, path) {
+    const res = await fetch(absolute(path), { method, headers: { 'X-API-Key': apiKey() } });
+    return { status: res.status, body: await res.json().catch(() => ({})) };
+  }
+
   function setStatus(text, kind) {
     const el = $('connection-status');
     el.textContent = text;
@@ -269,21 +275,81 @@
     }
   }
 
-  /** A live session: HLS only, straight from the live playlist (there is no video record). */
+  // ---------- live ----------
+
+  /** A live stream: HLS only, straight from the live playlist (there is no video record). */
   function loadLive(id) {
     clearTimeout(state.pollTimer);
     state.video = null;
     $('video-details').hidden = true;
     $('extras').hidden = true;
+    if (state.hls) {
+      state.hls.destroy();
+      state.hls = null;
+    }
     if (state.dash) {
       state.dash.destroy();
       state.dash = null;
     }
     $('dash-log').textContent = '';
     $('dash-play').disabled = true;
-    log('dash', 'live sessions are HLS only');
-    setStatus(`Live session ${id}`, 'ok');
-    setupHls(absolute(`/api/live/${encodeURIComponent(id)}/live.m3u8`));
+    log('dash', 'live streams are HLS only');
+    return watchLive(id);
+  }
+
+  /** Wait for the stream's playlist to appear, then play it. */
+  async function watchLive(id) {
+    const path = `/api/live/streams/${encodeURIComponent(id)}`;
+    const { status, body: stream } = await apiCall('GET', path);
+    if (status !== 200) {
+      setStatus(`Live stream ${id}: ${stream.message || `HTTP ${status}`}`, 'err');
+      return;
+    }
+    if (stream.playlist === null) {
+      setStatus(`Live stream ${id} ended (${stream.endReason}); its segments are deleted`, 'warn');
+      return;
+    }
+    // The playlist goes up once the stream has a few segments.
+    const ready =
+      stream.status !== 'waiting' &&
+      (await fetch(absolute(stream.playlist), { headers: { 'X-API-Key': apiKey() } })).ok;
+    if (!ready) {
+      const why =
+        stream.status === 'live'
+          ? 'live, waiting for its first segments'
+          : stream.ingest.online
+            ? 'waiting for the publisher'
+            : 'live ingest is not running';
+      setStatus(`Live stream ${id}: ${why}; checking every 2s`, 'warn');
+      state.pollTimer = setTimeout(() => watchLive(id), 2000);
+      return;
+    }
+    const ended = stream.status === 'ended' ? ` (${stream.endReason})` : '';
+    setStatus(`Live stream ${id}: ${stream.status}${ended}`, 'ok');
+    setupHls(absolute(stream.playlist));
+  }
+
+  async function startLive() {
+    const { status, body } = await apiCall('POST', '/api/live/streams');
+    if (status === 201) {
+      $('live-id').value = body.id;
+      log(
+        'hls',
+        `live stream ${body.id} started: publish to rtmp://<host>:<port>/live/<stream key>`,
+      );
+      return loadLive(body.id);
+    }
+    if (status === 409) $('live-id').value = body.activeStreamId;
+    setStatus(`Could not start a stream: ${body.message || `HTTP ${status}`}`, 'err');
+    return undefined;
+  }
+
+  async function stopLive(id) {
+    clearTimeout(state.pollTimer);
+    const { status, body } = await apiCall('DELETE', `/api/live/streams/${encodeURIComponent(id)}`);
+    if (status === 200) setStatus(`Live stream ${id} stopped`, 'ok');
+    else if (status === 202) setStatus(`Live stream ${id} is stopping`, 'warn');
+    else setStatus(`Could not stop live stream ${id}: ${body.message || `HTTP ${status}`}`, 'err');
   }
 
   // ---------- HLS (hls.js) ----------
@@ -537,7 +603,7 @@
 
   // ---------- wiring ----------
 
-  // Deep links: /player/?key=...&video=<id>&autoplay=1, or live=<session id> instead of video
+  // Deep links: /player/?key=...&video=<id>&autoplay=1, or live=<stream id> instead of video
   // (the key is moved into local storage and stripped from the address bar so it does not
   // linger in history).
   const params = new URLSearchParams(window.location.search);
@@ -568,10 +634,18 @@
   $('refresh').addEventListener('click', () => {
     if (state.video) loadVideo(state.video.id);
   });
+  $('live-start').addEventListener('click', () => {
+    startLive().catch((err) => setStatus(`Could not start a stream: ${err.message}`, 'err'));
+  });
   $('live-load').addEventListener('click', () => {
     const id = $('live-id').value.trim();
-    if (id) loadLive(id);
-    else setStatus('Paste a live session id', 'warn');
+    if (id) loadLive(id).catch((err) => setStatus(`Live stream ${id}: ${err.message}`, 'err'));
+    else setStatus('Start a stream, or paste a live stream id', 'warn');
+  });
+  $('live-stop').addEventListener('click', () => {
+    const id = $('live-id').value.trim();
+    if (id) stopLive(id).catch((err) => setStatus(`Could not stop ${id}: ${err.message}`, 'err'));
+    else setStatus('Paste the id of the live stream to stop', 'warn');
   });
   $('video-list').addEventListener('change', (event) => {
     $('video-id').value = '';

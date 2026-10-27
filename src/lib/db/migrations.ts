@@ -143,6 +143,46 @@ const migrations: Record<string, Migration> = {
       await db.schema.alterTable('videos').dropColumn('thumbnail_track_key').execute();
     },
   },
+
+  '0005_live_streams': {
+    async up(db: Kysely<unknown>) {
+      await db.schema
+        .createTable('live_streams')
+        .addColumn('id', 'text', (c) => c.primaryKey())
+        .addColumn('status', 'text', (c) => c.notNull())
+        // 1 while the stream is waiting or live, NULL once it has ended. A unique column allows
+        // any number of NULLs on both backends, so the database itself holds the line at one
+        // active stream, even against two requests racing.
+        .addColumn('active', 'integer', (c) => c.unique())
+        .addColumn('end_reason', 'text')
+        .addColumn('stop_requested_at', 'text')
+        .addColumn('created_at', 'text', (c) => c.notNull())
+        .addColumn('started_at', 'text')
+        .addColumn('ended_at', 'text')
+        .addColumn('cleanup_after', 'text')
+        .addColumn('cleaned_at', 'text')
+        .addColumn('updated_at', 'text', (c) => c.notNull())
+        .execute();
+      await db.schema
+        .createIndex('live_streams_created_at_idx')
+        .on('live_streams')
+        .column('created_at')
+        .execute();
+
+      // One row: the live process's last report about itself.
+      await db.schema
+        .createTable('live_ingest')
+        .addColumn('id', 'text', (c) => c.primaryKey())
+        .addColumn('state', 'text', (c) => c.notNull())
+        .addColumn('error', 'text')
+        .addColumn('reported_at', 'text', (c) => c.notNull())
+        .execute();
+    },
+    async down(db: Kysely<unknown>) {
+      await db.schema.dropTable('live_ingest').execute();
+      await db.schema.dropTable('live_streams').execute();
+    },
+  },
 };
 
 export const migrationProvider: MigrationProvider = {

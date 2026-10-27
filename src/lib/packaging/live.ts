@@ -3,14 +3,14 @@ import { H264_720P } from '../transcode/profiles.js';
 /**
  * Live HLS output (phase 2): the RTMP listener's FFmpeg encodes one H.264/AAC rung in real time
  * and packages it as CMAF (fragmented MP4, decision #9) under a sliding-window playlist. FFmpeg
- * runs with its working directory set to the session's work dir, so every name here is relative
+ * runs with its working directory set to the stream's work dir, so every name here is relative
  * to that directory; the live process then copies the files to storage under `live/<id>/`.
  */
 export const LIVE_PLAYLIST = 'live.m3u8';
 export const LIVE_INIT_SEGMENT = 'init.mp4';
 /** printf pattern FFmpeg numbers media segments with. */
 const LIVE_SEGMENT_PATTERN = 'seg_%05d.m4s';
-/** Every file a live session publishes. Five digits grow to six after ~55 hours, hence `{5,}`. */
+/** Every file a live stream publishes. Five digits grow to six after ~55 hours, hence `{5,}`. */
 const LIVE_FILE = /^(?:live\.m3u8|init\.mp4|seg_\d{5,}\.m4s)$/;
 
 /** Segment length. Shorter than VOD's: a live player sits about three segments behind the edge. */
@@ -28,16 +28,16 @@ export const LIVE_RUNG = H264_720P;
 /** Fast enough to stay real-time next to VOD transcodes; quality is the rung's bitrate's job. */
 export const LIVE_X264_PRESET = 'veryfast';
 
-/** Storage prefix of live sessions: `live/<session id>/<file>`. */
+/** Storage prefix of live streams: `live/<stream id>/<file>`. */
 export const LIVE_PREFIX = 'live';
 /** Directory under the work root where the live process stages FFmpeg's output. */
 export const LIVE_WORK_DIR_NAME = 'chitrayaan-live';
 
-export function liveKey(sessionId: string, file: string): string {
-  return `${LIVE_PREFIX}/${sessionId}/${file}`;
+export function liveKey(streamId: string, file: string): string {
+  return `${LIVE_PREFIX}/${streamId}/${file}`;
 }
 
-/** True for a name a live session can publish (and so the API may serve). */
+/** True for a name a live stream can publish (and so the API may serve). */
 export function isLiveFileName(name: string): boolean {
   return LIVE_FILE.test(name);
 }
@@ -55,7 +55,7 @@ function scaleFilter(height: number): string {
   );
 }
 
-/** Output arguments for the live listener's FFmpeg. Run it with `cwd` = the session work dir. */
+/** Output arguments for the live listener's FFmpeg. Run it with `cwd` = the stream's work dir. */
 export function buildLiveHlsArgs(): string[] {
   const rung = LIVE_RUNG;
   const kbps = (n: number) => `${n}k`;

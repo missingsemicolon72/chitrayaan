@@ -15,8 +15,8 @@ import {
 import { contentTypeForKey, type ObjectStorage } from '../lib/storage/index.js';
 
 export interface LiveMirrorOptions {
-  sessionId: string;
-  /** The session's work dir, where FFmpeg writes. */
+  streamId: string;
+  /** The stream's work dir, where FFmpeg writes. */
   dir: string;
   storage: ObjectStorage;
   logger: MinimalLogger;
@@ -37,7 +37,7 @@ const ERROR_LOG_INTERVAL_MS = 30_000;
 const FINAL_SYNC_ATTEMPTS = 3;
 
 /**
- * Copies one live session from its work dir to storage as FFmpeg produces it, so the API can
+ * Copies one live stream from its work dir to storage as FFmpeg produces it, so the API can
  * serve it from either storage backend. Each time the playlist changes, the segments it newly
  * lists go up first and the playlist after them, so a player never sees a segment before it is
  * fetchable. The first playlist waits until it lists `startSegments` segments, so players can
@@ -74,7 +74,7 @@ export class LiveMirror {
   }
 
   /**
-   * Stop polling and publish the session's final state: the last segments, and a playlist that
+   * Stop polling and publish the stream's final state: the last segments, and a playlist that
    * is marked as ended even if FFmpeg could not write the end itself. Segments outside that
    * last window are deleted at once, since the stream is over.
    */
@@ -102,7 +102,7 @@ export class LiveMirror {
         if (now - this.lastErrorLogAt >= ERROR_LOG_INTERVAL_MS) {
           this.lastErrorLogAt = now;
           this.options.logger.error(
-            { err, sessionId: this.options.sessionId },
+            { err, streamId: this.options.streamId },
             'could not publish live segments to storage (will keep retrying)',
           );
         }
@@ -121,7 +121,7 @@ export class LiveMirror {
 
   /** One pass: publish whatever changed since the last one. Safe to repeat after a failure. */
   async sync(final: boolean): Promise<void> {
-    const { sessionId, storage, logger } = this.options;
+    const { streamId, storage, logger } = this.options;
     const text = await this.readLocal(LIVE_PLAYLIST);
     if (text === null) return; // FFmpeg has not finished its first segment yet.
     const playlist = final ? withEndList(text) : text;
@@ -133,26 +133,26 @@ export class LiveMirror {
       const files = parsed.initSegment ? [parsed.initSegment, ...parsed.segments] : parsed.segments;
       for (const file of files) {
         if (this.stored.has(file)) continue;
-        // Names come from FFmpeg's own playlist, but nothing outside the session is ever read.
+        // Names come from FFmpeg's own playlist, but nothing outside the stream's dir is ever read.
         if (!isLiveFileName(file)) throw new Error(`unexpected file in live playlist: ${file}`);
         try {
-          await storage.putFile(liveKey(sessionId, file), path.join(this.options.dir, file), {
+          await storage.putFile(liveKey(streamId, file), path.join(this.options.dir, file), {
             contentType: contentTypeForKey(file),
           });
         } catch (err) {
           // Gone already: this mirror fell so far behind that FFmpeg deleted it. Skip it rather
           // than hold up every later segment.
           if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-          logger.warn({ sessionId, file }, 'live segment was gone before it could be published');
+          logger.warn({ streamId, file }, 'live segment was gone before it could be published');
         }
         this.stored.add(file);
       }
-      await storage.put(liveKey(sessionId, LIVE_PLAYLIST), playlist, {
+      await storage.put(liveKey(streamId, LIVE_PLAYLIST), playlist, {
         contentType: contentTypeForKey(LIVE_PLAYLIST),
       });
       if (this.published === null) {
         logger.info(
-          { sessionId, playlist: `/api/live/${sessionId}/${LIVE_PLAYLIST}` },
+          { streamId, playlist: `/api/live/${streamId}/${LIVE_PLAYLIST}` },
           'live playlist published',
         );
       }
@@ -173,7 +173,7 @@ export class LiveMirror {
     const cutoff = Date.now() - this.retainRemovedMs;
     for (const [segment, removedAt] of this.removed) {
       if (!all && removedAt > cutoff) continue;
-      await this.options.storage.delete(liveKey(this.options.sessionId, segment));
+      await this.options.storage.delete(liveKey(this.options.streamId, segment));
       this.removed.delete(segment);
       this.stored.delete(segment);
     }

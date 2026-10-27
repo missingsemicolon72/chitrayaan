@@ -90,7 +90,8 @@ flowchart LR
 ```
 
 The API, the worker and the live process are three separate processes (decision #21). Live ingest
-never runs inside the API.
+never runs inside the API. The API starts and stops live streams by recording them in the
+database, which the live process checks every second; it never calls the live process directly.
 
 All endpoints except `/healthz` require an `X-API-Key` header matching the configured `API_KEY`.
 
@@ -166,7 +167,7 @@ Starting rung set (H.264/AAC baseline — same rungs get an AV1 variant when tha
 - `GET /api/videos/:id/master.m3u8` — HLS master playlist
 - `GET /api/videos/:id/master.mpd` — DASH manifest
 - `GET /api/videos/:id/...` — segment/rendition files
-- `POST /api/live/streams` / `DELETE /api/live/streams/:id` / `GET /api/live/streams/:id` — phase 2, lifecycle
+- `POST /api/live/streams` / `DELETE /api/live/streams/:id` / `GET /api/live/streams/:id` / `GET /api/live/streams` — phase 2, lifecycle
 - `GET /api/live/:id/live.m3u8` — phase 2, live playlist
 - `GET /healthz` — no auth required
 

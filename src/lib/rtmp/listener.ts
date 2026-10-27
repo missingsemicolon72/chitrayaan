@@ -76,6 +76,13 @@ export interface RtmpListenerOptions {
    * can be put where the session will look for it. Defaults to discarding the stream.
    */
   output?: (sessionId: string) => ListenerOutput;
+  /** The id the next FFmpeg's session would have. Defaults to a fresh random UUID each time. */
+  sessionId?: () => string;
+  /**
+   * Serve one session only: once it ends, stop instead of listening for the next publisher.
+   * Rejected publishers and connections that never publish do not count.
+   */
+  once?: boolean;
 }
 
 export interface ListenerOutput {
@@ -133,6 +140,7 @@ export class RtmpListener extends EventEmitter<RtmpListenerEvents> {
   private readonly idleTimeoutSeconds: number;
   private readonly rearmSeconds: number;
   private readonly output: (sessionId: string) => ListenerOutput;
+  private readonly nextSessionId: () => string;
   private running = false;
   private state: ListenerState = 'stopped';
   private attempt: Attempt | null = null;
@@ -147,6 +155,7 @@ export class RtmpListener extends EventEmitter<RtmpListenerEvents> {
     this.idleTimeoutSeconds = options.idleTimeoutSeconds ?? 10;
     this.rearmSeconds = options.rearmSeconds ?? 30;
     this.output = options.output ?? (() => ({ args: DISCARD_OUTPUT }));
+    this.nextSessionId = options.sessionId ?? (() => randomUUID());
   }
 
   /** Start accepting publishers. Does nothing if already started. */
@@ -203,7 +212,7 @@ export class RtmpListener extends EventEmitter<RtmpListenerEvents> {
   private spawnListener(): void {
     this.retryTimer = null;
     const { ffmpegPath, host, port, streamKey } = this.options;
-    const id = randomUUID();
+    const id = this.nextSessionId();
     let output: ListenerOutput;
     try {
       output = this.output(id);
@@ -378,6 +387,13 @@ export class RtmpListener extends EventEmitter<RtmpListenerEvents> {
     }
 
     this.attempt = null;
+    if (attempt.session !== null && this.options.once === true) {
+      // Its one session is over.
+      this.running = false;
+      this.lastError = null;
+      this.setState('stopped');
+      return;
+    }
     const failedToListen = attempt.spawnError !== null || (attempt.listenFailed && !rearmed);
     this.rearm(
       attempt.session !== null ||

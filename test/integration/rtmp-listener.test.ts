@@ -468,6 +468,38 @@ describe.skipIf(!FFMPEG)('RtmpListener (FFmpeg RTMP ingest)', () => {
     SLOW,
   );
 
+  it(
+    'with `once`, serves one session under the id it is given and then closes the port',
+    async () => {
+      const { listener, events, port } = await startListener({
+        once: true,
+        sessionId: () => 'stream-1',
+      });
+      await listenerReady(listener);
+
+      // A rejected publisher is not a session: the listener carries on.
+      const rejected = startPublisher({
+        port,
+        streamKey: 'wrong-stream-key-0123456789',
+        seconds: 2,
+      });
+      expect((await rejected.done).exitCode).not.toBe(0);
+      await listenerReady(listener);
+
+      const publisher = startPublisher({ port, streamKey: STREAM_KEY, seconds: 2 });
+      expect((await publisher.done).exitCode).toBe(0);
+      await waitFor(
+        async () => listener.status().state,
+        (state) => state === 'stopped',
+      );
+      expect(events.rejected).toEqual(['stream-key']);
+      expect(events.started.map((session) => session.id)).toEqual(['stream-1']);
+      expect(events.ended).toMatchObject([{ id: 'stream-1', reason: 'publisher-disconnected' }]);
+      expect(await portInUse(port)).toBe(false);
+    },
+    SLOW,
+  );
+
   it('backs off when the output cannot be prepared, and recovers when it can', async () => {
     let failing = true;
     const { listener, logs } = await startListener({

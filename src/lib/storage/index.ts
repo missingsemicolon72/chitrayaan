@@ -6,6 +6,7 @@ import type { ObjectStorage } from './types.js';
 export { LocalDiskStorage } from './local-disk.js';
 export { S3Storage, type S3StorageConfig } from './s3.js';
 export { assertValidKey, assertValidPrefix, contentTypeForKey } from './keys.js';
+export { readStoredText } from './text.js';
 export {
   InvalidStorageKeyError,
   StorageNotFoundError,

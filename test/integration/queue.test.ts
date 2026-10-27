@@ -110,7 +110,8 @@ describe.skipIf(!REDIS)('transcode queue + worker', () => {
     expect(failedVideo?.error).toBe(done?.error);
     const live = await waitFor(
       () => t.queue.getState(job.id),
-      (state) => state?.state === 'failed',
+      // As above: the fields can be read before BullMQ has written the failure.
+      (state) => state?.state === 'failed' && state.failedReason !== null,
     );
     expect(live?.failedReason).toMatch(/uploads\/does-not-exist not found/);
   });

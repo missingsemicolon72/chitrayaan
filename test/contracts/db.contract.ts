@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { RecordNotFoundError, type Database, type VideoPatch } from '../../src/lib/db/index.js';
+import {
+  ActiveLiveStreamError,
+  RecordNotFoundError,
+  type Database,
+  type LiveEndReason,
+  type VideoPatch,
+} from '../../src/lib/db/index.js';
 
 export interface DatabaseFixture {
   db: Database;
@@ -361,6 +367,135 @@ export function describeDatabaseContract(
         const page = await db.jobs.list({ limit: 1, offset: 1 });
         expect(page).toMatchObject({ total: 3, limit: 1, offset: 1 });
         expect(page.items).toHaveLength(1);
+      });
+    });
+
+    describe('live streams', () => {
+      const end = (reason: LiveEndReason, cleanupAfter = '2000-01-01T00:00:00.000Z') => ({
+        reason,
+        cleanupAfter,
+      });
+
+      it('creates a waiting stream, and only one may be active at a time', async () => {
+        const stream = await db.liveStreams.create();
+        expect(stream.id).toMatch(UUID);
+        expect(stream).toMatchObject({
+          status: 'waiting',
+          endReason: null,
+          stopRequestedAt: null,
+          startedAt: null,
+          endedAt: null,
+          cleanupAfter: null,
+          cleanedAt: null,
+        });
+        expect(stream.createdAt).toMatch(ISO_UTC);
+        expect(await db.liveStreams.get(stream.id)).toEqual(stream);
+        expect(await db.liveStreams.getActive()).toEqual(stream);
+
+        const refused = await db.liveStreams.create().catch((err: unknown) => err);
+        expect(refused).toBeInstanceOf(ActiveLiveStreamError);
+        expect((refused as ActiveLiveStreamError).active.id).toBe(stream.id);
+
+        // Once it has ended, the next one may start.
+        await db.liveStreams.end(stream.id, end('stopped'));
+        expect(await db.liveStreams.getActive()).toBeNull();
+        const next = await db.liveStreams.create();
+        expect((await db.liveStreams.getActive())?.id).toBe(next.id);
+      });
+
+      it('goes live once, and ends once, from either active state', async () => {
+        const stream = await db.liveStreams.create();
+        const live = await db.liveStreams.markLive(stream.id);
+        expect(live).toMatchObject({ id: stream.id, status: 'live' });
+        expect(live?.startedAt).toMatch(ISO_UTC);
+        expect(await db.liveStreams.markLive(stream.id)).toBeNull();
+
+        const ended = await db.liveStreams.end(
+          stream.id,
+          end('publisher-disconnected', '2030-01-01T00:00:00.000Z'),
+        );
+        expect(ended).toMatchObject({
+          status: 'ended',
+          endReason: 'publisher-disconnected',
+          cleanupAfter: '2030-01-01T00:00:00.000Z',
+          startedAt: live?.startedAt,
+        });
+        expect(ended?.endedAt).toMatch(ISO_UTC);
+        expect(await db.liveStreams.end(stream.id, end('stopped'))).toBeNull();
+        expect(await db.liveStreams.markLive(stream.id)).toBeNull();
+        expect((await db.liveStreams.get(stream.id))?.endReason).toBe('publisher-disconnected');
+
+        // A waiting stream can end without ever going live.
+        const unused = await db.liveStreams.create();
+        expect(await db.liveStreams.end(unused.id, end('stopped'))).toMatchObject({
+          status: 'ended',
+          startedAt: null,
+        });
+        expect(await db.liveStreams.end('ghost', end('stopped'))).toBeNull();
+      });
+
+      it('records a stop request once, and only on an active stream', async () => {
+        const stream = await db.liveStreams.create();
+        const first = await db.liveStreams.requestStop(stream.id);
+        expect(first?.stopRequestedAt).toMatch(ISO_UTC);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        expect((await db.liveStreams.requestStop(stream.id))?.stopRequestedAt).toBe(
+          first?.stopRequestedAt,
+        );
+        await db.liveStreams.end(stream.id, end('stopped'));
+        expect(await db.liveStreams.requestStop(stream.id)).toBeNull();
+        expect(await db.liveStreams.requestStop('ghost')).toBeNull();
+      });
+
+      it('lists ended streams due for cleanup until they are marked cleaned', async () => {
+        const due = await db.liveStreams.create();
+        await db.liveStreams.end(due.id, end('stopped', '2026-01-01T00:00:00.000Z'));
+        const later = await db.liveStreams.create();
+        await db.liveStreams.end(later.id, end('stopped', '2026-01-01T00:10:00.000Z'));
+        const active = await db.liveStreams.create();
+
+        const now = '2026-01-01T00:05:00.000Z';
+        expect((await db.liveStreams.listCleanupDue(now)).map((s) => s.id)).toEqual([due.id]);
+        const cleaned = await db.liveStreams.markCleaned(due.id);
+        expect(cleaned?.cleanedAt).toMatch(ISO_UTC);
+        expect(await db.liveStreams.markCleaned(due.id)).toBeNull();
+        expect(await db.liveStreams.markCleaned(active.id)).toBeNull();
+        expect(await db.liveStreams.listCleanupDue(now)).toEqual([]);
+        expect(
+          (await db.liveStreams.listCleanupDue('2026-01-01T00:10:00.000Z')).map((s) => s.id),
+        ).toEqual([later.id]);
+      });
+
+      it('lists newest first, filtered by status, and deletes', async () => {
+        const first = await db.liveStreams.create();
+        await db.liveStreams.end(first.id, end('stopped'));
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        const second = await db.liveStreams.create();
+
+        const all = await db.liveStreams.list();
+        expect(all).toMatchObject({ total: 2, limit: 50, offset: 0 });
+        expect(all.items.map((s) => s.id)).toEqual([second.id, first.id]);
+        expect((await db.liveStreams.list({ status: 'ended' })).items.map((s) => s.id)).toEqual([
+          first.id,
+        ]);
+        expect((await db.liveStreams.list({ limit: 1, offset: 1 })).items).toHaveLength(1);
+
+        expect(await db.liveStreams.delete(first.id)).toBe(true);
+        expect(await db.liveStreams.delete(first.id)).toBe(false);
+        expect(await db.liveStreams.get(first.id)).toBeNull();
+      });
+
+      it("keeps the live process's latest report", async () => {
+        await db.liveIngest.report({ state: 'listening', error: null });
+        const first = await db.liveIngest.get();
+        expect(first).toMatchObject({ state: 'listening', error: null });
+        expect(first?.reportedAt).toMatch(ISO_UTC);
+
+        await db.liveIngest.report({ state: 'restarting', error: 'port 1935 is in use' });
+        expect(await db.liveIngest.get()).toMatchObject({
+          state: 'restarting',
+          error: 'port 1935 is in use',
+        });
       });
     });
   });

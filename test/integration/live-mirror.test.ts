@@ -8,7 +8,7 @@ import type { MinimalLogger } from '../../src/lib/logger.js';
 import { LocalDiskStorage, type ObjectStorage } from '../../src/lib/storage/index.js';
 import { LiveMirror, type LiveMirrorOptions } from '../../src/live/mirror.js';
 
-const SESSION = '0f0e0d0c-0b0a-4908-8706-050403020100';
+const STREAM = '0f0e0d0c-0b0a-4908-8706-050403020100';
 
 /** A playlist in FFmpeg's format listing `segments`. */
 function playlist(segments: string[], ended = false): string {
@@ -77,7 +77,7 @@ describe('LiveMirror', () => {
     };
     // Most cases publish from the first segment; the start threshold has its own tests.
     return new LiveMirror({
-      sessionId: SESSION,
+      streamId: STREAM,
       dir,
       storage,
       logger,
@@ -92,9 +92,9 @@ describe('LiveMirror', () => {
     await writeFile(path.join(dir, 'live.m3u8'), playlist(listed, ended));
   }
 
-  const stored = async () => (await readdir(path.join(storageRoot, 'live', SESSION))).sort();
+  const stored = async () => (await readdir(path.join(storageRoot, 'live', STREAM))).sort();
   const storedPlaylist = () =>
-    readFile(path.join(storageRoot, 'live', SESSION, 'live.m3u8'), 'utf8');
+    readFile(path.join(storageRoot, 'live', STREAM, 'live.m3u8'), 'utf8');
 
   it('waits for FFmpeg to write a playlist', async () => {
     await mirror().sync(false);
@@ -109,11 +109,11 @@ describe('LiveMirror', () => {
     await m.sync(false);
     await m.sync(false); // unchanged: nothing to do
     expect(ops).toEqual([
-      `putFile live/${SESSION}/init.mp4`,
-      `putFile live/${SESSION}/seg_00000.m4s`,
-      `put live/${SESSION}/live.m3u8`,
-      `putFile live/${SESSION}/seg_00001.m4s`,
-      `put live/${SESSION}/live.m3u8`,
+      `putFile live/${STREAM}/init.mp4`,
+      `putFile live/${STREAM}/seg_00000.m4s`,
+      `put live/${STREAM}/live.m3u8`,
+      `putFile live/${STREAM}/seg_00001.m4s`,
+      `put live/${STREAM}/live.m3u8`,
     ]);
     expect(await storedPlaylist()).toBe(playlist(['seg_00000.m4s', 'seg_00001.m4s']));
   });
@@ -130,7 +130,7 @@ describe('LiveMirror', () => {
     await ffmpegWrites(['seg_00002.m4s'], ['seg_00000.m4s', 'seg_00001.m4s', 'seg_00002.m4s']);
     await m.sync(false);
     expect(ops).toHaveLength(5); // init, three segments, then the playlist
-    expect(ops.at(-1)).toBe(`put live/${SESSION}/live.m3u8`);
+    expect(ops.at(-1)).toBe(`put live/${STREAM}/live.m3u8`);
   });
 
   it('publishes a stream too short to reach that threshold once it ends', async () => {
@@ -180,9 +180,9 @@ describe('LiveMirror', () => {
     expect(await stored()).toEqual(['init.mp4', 'live.m3u8', 'seg_00001.m4s']);
   });
 
-  it('refuses a playlist that names a file outside the session', async () => {
+  it('refuses a playlist that names a file outside its work dir', async () => {
     await ffmpegWrites(['init.mp4'], ['../../secret.m4s']);
     await expect(mirror().sync(false)).rejects.toThrow(/unexpected file/);
-    expect(ops).toEqual([`putFile live/${SESSION}/init.mp4`]);
+    expect(ops).toEqual([`putFile live/${STREAM}/init.mp4`]);
   });
 });

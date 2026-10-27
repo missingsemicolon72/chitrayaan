@@ -1,4 +1,11 @@
-import type { Codec, JobStatus, JobType, VideoStatus } from './types.js';
+import type {
+  Codec,
+  JobStatus,
+  JobType,
+  LiveEndReason,
+  LiveStreamStatus,
+  VideoStatus,
+} from './types.js';
 
 /**
  * Kysely table types. Property names are camelCase; `CamelCasePlugin` maps them to the
@@ -68,9 +75,33 @@ export interface SubtitlesTable {
   updatedAt: string;
 }
 
+export interface LiveStreamsTable {
+  id: string;
+  status: LiveStreamStatus;
+  /** 1 while waiting or live, NULL once ended (see the 0005 migration). */
+  active: number | null;
+  endReason: LiveEndReason | null;
+  stopRequestedAt: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  cleanupAfter: string | null;
+  cleanedAt: string | null;
+  updatedAt: string;
+}
+
+export interface LiveIngestTable {
+  id: string;
+  state: string;
+  error: string | null;
+  reportedAt: string;
+}
+
 export interface DatabaseSchema {
   videos: VideosTable;
   jobs: JobsTable;
   renditions: RenditionsTable;
   subtitles: SubtitlesTable;
+  liveStreams: LiveStreamsTable;
+  liveIngest: LiveIngestTable;
 }

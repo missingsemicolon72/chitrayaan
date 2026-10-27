@@ -1,11 +1,8 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 
-import {
-  assertValidKey,
-  contentTypeForKey,
-  StorageNotFoundError,
-  type ObjectStorage,
-} from '../lib/storage/index.js';
+import { assertValidKey, contentTypeForKey, StorageNotFoundError } from '../lib/storage/index.js';
+
+export { readStoredText } from '../lib/storage/index.js';
 
 export const notFound = (message: string) => ({
   statusCode: 404,
@@ -39,17 +36,4 @@ export async function sendStoredObject(
     .header('content-length', String(info.size))
     .header('last-modified', info.lastModified.toUTCString())
     .send(body);
-}
-
-/** Read a small stored text object (a manifest) into a string, or null when it is missing. */
-export async function readStoredText(storage: ObjectStorage, key: string): Promise<string | null> {
-  if (!(await storage.exists(key))) return null;
-  const chunks: Buffer[] = [];
-  try {
-    for await (const chunk of await storage.get(key)) chunks.push(Buffer.from(chunk as Buffer));
-  } catch (err) {
-    if (err instanceof StorageNotFoundError) return null;
-    throw err;
-  }
-  return Buffer.concat(chunks).toString('utf8');
 }

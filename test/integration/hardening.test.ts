@@ -277,6 +277,8 @@ describe('error responses', () => {
         jobs: t.app.db.jobs,
         renditions: t.app.db.renditions,
         subtitles: t.app.db.subtitles,
+        liveStreams: t.app.db.liveStreams,
+        liveIngest: t.app.db.liveIngest,
         videos: {
           ...t.app.db.videos,
           get: () => Promise.reject(new Error('connection string: postgres://user:hunter2@host')),

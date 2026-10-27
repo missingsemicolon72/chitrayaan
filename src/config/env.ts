@@ -146,6 +146,11 @@ export const envSchema = z
         'RTMP_STREAM_KEY may contain only letters, digits and . _ ~ - (it is part of the RTMP URL)',
       )
       .optional(),
+    /**
+     * How long an ended live stream's last segments stay in storage, so viewers can play to its
+     * end, before the live process deletes them.
+     */
+    LIVE_CLEANUP_DELAY_SECONDS: z.coerce.number().int().min(0).default(60),
 
     // Testing
     TEST_SAMPLES_DIR: z.string().min(1).default('./test/samples'),
