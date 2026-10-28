@@ -1,6 +1,8 @@
 import { ListBucketsCommand, S3Client } from '@aws-sdk/client-s3';
 import pg from 'pg';
 
+import { unavailable } from './services.js';
+
 /**
  * Cloud-mode services for the parity suites. Both are optional: when the service is not
  * running the suite skips itself, the same way the Redis and FFmpeg suites do.
@@ -31,11 +33,11 @@ export function postgresAvailable(): Promise<boolean> {
       await pool.query('select 1');
       return true;
     } catch (err) {
-      console.warn(
-        `[tests] Postgres not reachable at ${TEST_DATABASE_URL.replace(/:[^:@]*@/, ':***@')}; ` +
-          `its parity suite is skipped (${(err as Error).message})`,
+      return unavailable(
+        `Postgres not reachable at ${TEST_DATABASE_URL.replace(/:[^:@]*@/, ':***@')} ` +
+          `(${(err as Error).message})`,
+        'the Postgres parity suite',
       );
-      return false;
     } finally {
       await pool.end().catch(() => undefined);
     }
@@ -60,11 +62,10 @@ export function s3Available(): Promise<boolean> {
       await client.send(new ListBucketsCommand({}));
       return true;
     } catch (err) {
-      console.warn(
-        `[tests] no S3 server at ${TEST_S3.endpoint}; its parity suite is skipped ` +
-          `(${(err as Error).message})`,
+      return unavailable(
+        `no S3 server at ${TEST_S3.endpoint} (${(err as Error).message})`,
+        'the S3 parity suite',
       );
-      return false;
     } finally {
       client.destroy();
     }

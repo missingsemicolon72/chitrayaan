@@ -2,11 +2,12 @@
 export const RTMP_APP = 'live';
 
 /**
- * What FFmpeg does with an accepted stream when the caller asks for nothing else: demux it and
- * throw the packets away. That proves the stream arrives intact and keeps the progress counters
- * honest without producing anything.
+ * What FFmpeg does with an accepted stream when the caller asks for nothing else: decode it and
+ * throw the frames away. That proves the stream arrives intact and decodes, and keeps the
+ * progress counters honest without producing anything. Not `-c copy`: for stream copy, FFmpeg
+ * 6.1 leaves `frame=` out of its progress output entirely, so frames would read 0.
  */
-export const DISCARD_OUTPUT: readonly string[] = ['-c', 'copy', '-f', 'null', '-'];
+export const DISCARD_OUTPUT: readonly string[] = ['-f', 'null', '-'];
 
 export interface ListenerArgsOptions {
   host: string;

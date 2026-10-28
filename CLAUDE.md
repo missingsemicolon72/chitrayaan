@@ -119,6 +119,7 @@ All endpoints except `/healthz` require an `X-API-Key` header matching the confi
   /unit
   /integration
 /player           Static test page: hls.js + dash.js, plain HTML
+/.github/workflows   CI on GitHub Actions (Milestone 16)
 docker-compose.yml   (added at the containerize milestone, not before)
 .env.example
 CLAUDE.md
@@ -208,6 +209,11 @@ wait for explicit go-ahead before starting the next one.** Do not batch mileston
 13. **FFmpeg RTMP listener** — accept a single incoming stream on `RTMP_LISTEN_PORT`, in its own process (decision #21).
 14. **Live transcode + rolling HLS** — one quality rung, real-time, sliding-window live playlist.
 15. **Live session lifecycle** — start/stop/status API, segment cleanup after the stream ends.
+
+### Phase 3 — Release (added after Milestone 15, at the owner's request)
+
+16. **Continuous integration** — GitHub Actions runs the full check on every push and pull request with FFmpeg, Redis, Postgres and S3 all present (nothing skips except the real-sample tests, which need the owner's clips), plus a Docker image build.
+17. **Whole-codebase review, then v1.0** — review across all milestones for bugs, security issues and leftovers; fix what it finds; the owner tags `v1.0` (decision #19).
 
 ## Working with the project owner
 

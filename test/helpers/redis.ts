@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 
 import { Redis } from 'ioredis';
 
+import { unavailable } from './services.js';
+
 /** Redis used by queue tests. Override with TEST_REDIS_URL. */
 export const TEST_REDIS_URL = process.env.TEST_REDIS_URL ?? 'redis://127.0.0.1:6379';
 
@@ -26,8 +28,7 @@ export function redisAvailable(): Promise<boolean> {
       await client.ping();
       return true;
     } catch {
-      console.warn(`[tests] Redis not reachable at ${TEST_REDIS_URL}; queue tests are skipped`);
-      return false;
+      return unavailable(`Redis not reachable at ${TEST_REDIS_URL}`, 'the queue tests');
     } finally {
       client.disconnect();
     }

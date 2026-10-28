@@ -71,9 +71,15 @@ same API. Any S3-compatible server works: point `S3_ENDPOINT` elsewhere and drop
 | `npm run check`        | typecheck + lint + format check + tests, in that order   |
 | `npm run fixtures`     | Generate the synthetic test clips (also done by `test`)  |
 
-Tests that need Redis or FFmpeg skip themselves (with a console warning) when those are missing.
+Tests that need FFmpeg, Redis, Postgres or S3 skip themselves (with a console warning) when
+those are missing; set `TEST_REQUIRE_SERVICES=1` to make a missing one fail the run instead.
 To validate against your own clips, drop them in `test/samples/` (gitignored) and run
 `RUN_SAMPLE_TESTS=1 npm test -- samples`; this is slow by design and not part of `check`.
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on every push and pull request. It runs
+`npm run check` on Ubuntu 24.04 with FFmpeg, Redis, Postgres and S3 all up and
+`TEST_REQUIRE_SERVICES=1`, so no suite can skip itself, and it builds the Docker image and
+validates the compose file. The sample tests need your own clips, so they stay a local check.
 
 ## Configuration
 
@@ -372,4 +378,5 @@ test/integration  driver + app-level tests (Fastify inject, no network)
 test/fixtures  generated synthetic clips (not committed)
 test/samples   your own real clips (gitignored)
 player         static hls.js + dash.js test page
+.github        CI workflow (GitHub Actions)
 ```

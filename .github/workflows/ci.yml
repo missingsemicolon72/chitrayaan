@@ -1,0 +1,108 @@
+# Every push and pull request: the whole check (typecheck, lint, format, tests) with FFmpeg,
+# Redis, Postgres and S3 all present, so no suite can skip itself; plus a build of the Docker
+# image the compose stack runs. The owner's real sample clips are not in the repo, so the
+# sample tests (RUN_SAMPLE_TESTS=1) stay a local, milestone-time check.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Typecheck, lint, format and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: chitrayaan
+          POSTGRES_PASSWORD: chitrayaan
+          POSTGRES_DB: chitrayaan_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U chitrayaan -d chitrayaan_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      # A service that is not reachable fails the run instead of skipping its suites.
+      TEST_REQUIRE_SERVICES: '1'
+      TEST_REDIS_URL: redis://127.0.0.1:6379
+      TEST_DATABASE_URL: postgres://chitrayaan:chitrayaan@127.0.0.1:5432/chitrayaan_test
+      TEST_S3_ENDPOINT: http://127.0.0.1:9000
+      TEST_S3_ACCESS_KEY: chitrayaan
+      TEST_S3_SECRET_KEY: chitrayaan-dev-secret
+    steps:
+      - uses: actions/checkout@v7
+
+      # The S3 server is the compose stack's own image (credentials baked in), which a service
+      # container cannot build, so it starts here and has the next steps' time to come up.
+      - name: Start the S3 server
+        run: |
+          docker build -t chitrayaan-s3:ci docker/s3
+          docker run -d --name s3 -p 9000:9000 chitrayaan-s3:ci \
+            server -dir=/data -ip=127.0.0.1 -ip.bind=0.0.0.0 \
+            -master.volumeSizeLimitMB=1024 -volume.max=100 \
+            -filer -s3 -s3.port=9000 -s3.config=/etc/chitrayaan-s3/identities.json
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -hide_banner -version | head -n 1
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Wait for the S3 server
+        run: node docker/wait-for-http.mjs http://127.0.0.1:9000 -- true
+
+      - run: npm run check
+
+      - name: S3 server log
+        if: failure()
+        run: docker logs --tail 100 s3
+
+  image:
+    name: Docker image and compose file
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate the compose file
+        run: docker compose --profile live config --quiet
+
+      - name: Build the image
+        run: docker build -t chitrayaan:ci .
+
+      - name: The image's FFmpeg has the encoders the pipeline uses
+        run: |
+          encoders=$(docker run --rm chitrayaan:ci ffmpeg -hide_banner -encoders)
+          for encoder in libx264 aac libsvtav1; do
+            echo "$encoders" | grep -qw "$encoder" || { echo "missing encoder: $encoder"; exit 1; }
+          done
